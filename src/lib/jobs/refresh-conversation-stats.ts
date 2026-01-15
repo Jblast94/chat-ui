@@ -19,12 +19,14 @@ async function shouldComputeStats(): Promise<boolean> {
 export async function computeAllStats() {
 	for (const span of ["day", "week", "month"] as const) {
 		computeStats({ dateField: "updatedAt", type: "conversation", span }).catch((e) =>
-			logger.error(e)
+			logger.error(e, "Error computing conversation stats for updatedAt")
 		);
 		computeStats({ dateField: "createdAt", type: "conversation", span }).catch((e) =>
-			logger.error(e)
+			logger.error(e, "Error computing conversation stats for createdAt")
 		);
-		computeStats({ dateField: "createdAt", type: "message", span }).catch((e) => logger.error(e));
+		computeStats({ dateField: "createdAt", type: "message", span }).catch((e) =>
+			logger.error(e, "Error computing message stats for createdAt")
+		);
 	}
 }
 
@@ -33,6 +35,12 @@ async function computeStats(params: {
 	span: ConversationStats["date"]["span"];
 	type: ConversationStats["type"];
 }) {
+	const indexes = await collections.semaphores.listIndexes().toArray();
+	if (indexes.length <= 2) {
+		logger.info("Indexes not created, skipping stats computation");
+		return;
+	}
+
 	const lastComputed = await collections.conversationStats.findOne(
 		{ "date.field": params.dateField, "date.span": params.span, type: params.type },
 		{ sort: { "date.at": -1 } }

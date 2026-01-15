@@ -1,63 +1,70 @@
 import type { TextGenerationStreamOutput } from "@huggingface/inference";
 import type OpenAI from "openai";
 import type { Stream } from "openai/streaming";
-import type { ToolCall } from "$lib/types/Tool";
-
-type ToolCallWithParameters = {
-	toolCall: ToolCall;
-	parameterJsonString: string;
-};
-
-function prepareToolCalls(toolCallsWithParameters: ToolCallWithParameters[], tokenId: number) {
-	const toolCalls: ToolCall[] = [];
-
-	for (const toolCallWithParameters of toolCallsWithParameters) {
-		// HACK: sometimes gpt4 via azure returns the JSON with literal newlines in it
-		// like {\n "foo": "bar" }
-		const s = toolCallWithParameters.parameterJsonString.replace("\n", "");
-		const params = JSON.parse(s);
-
-		const toolCall = toolCallWithParameters.toolCall;
-		for (const name in params) {
-			toolCall.parameters[name] = params[name];
-		}
-
-		toolCalls.push(toolCall);
-	}
-
-	const output = {
-		token: {
-			id: tokenId,
-			text: "",
-			logprob: 0,
-			special: false,
-			toolCalls,
-		},
-		generated_text: null,
-		details: null,
-	};
-
-	return output;
-}
 
 /**
  * Transform a stream of OpenAI.Chat.ChatCompletion into a stream of TextGenerationStreamOutput
  */
 export async function* openAIChatToTextGenerationStream(
-	completionStream: Stream<OpenAI.Chat.Completions.ChatCompletionChunk>
+	completionStream: Stream<OpenAI.Chat.Completions.ChatCompletionChunk>,
+	getRouterMetadata?: () => { route?: string; model?: string; provider?: string }
 ) {
 	let generatedText = "";
 	let tokenId = 0;
-	const toolCalls: ToolCallWithParameters[] = [];
-	let toolBuffer = ""; // XXX: hack because tools seem broken on tgi openai endpoints?
+	let toolBuffer = ""; // legacy hack kept harmless
+	let metadataYielded = false;
+	let thinkOpen = false;
 
 	for await (const completion of completionStream) {
+		const retyped = completion as {
+			"x-router-metadata"?: { route: string; model: string; provider?: string };
+		};
+		// Check if this chunk contains router metadata (first chunk from llm-router)
+		if (!metadataYielded && retyped["x-router-metadata"]) {
+			const metadata = retyped["x-router-metadata"];
+			yield {
+				token: {
+					id: tokenId++,
+					text: "",
+					logprob: 0,
+					special: true,
+				},
+				generated_text: null,
+				details: null,
+				routerMetadata: {
+					route: metadata.route,
+					model: metadata.model,
+					provider: metadata.provider,
+				},
+			} as TextGenerationStreamOutput & {
+				routerMetadata: { route: string; model: string; provider?: string };
+			};
+			metadataYielded = true;
+			// Skip processing this chunk as content since it's just metadata
+			if (
+				!completion.choices ||
+				completion.choices.length === 0 ||
+				!completion.choices[0].delta?.content
+			) {
+				continue;
+			}
+		}
 		const { choices } = completion;
-		const content = choices[0]?.delta?.content ?? "";
-		const last = choices[0]?.finish_reason === "stop" || choices[0]?.finish_reason === "length";
+		const delta: OpenAI.Chat.Completions.ChatCompletionChunk.Choice.Delta & {
+			reasoning?: string;
+			reasoning_content?: string;
+		} = choices?.[0]?.delta ?? {};
+		const content: string = delta.content ?? "";
+		const reasoning: string =
+			typeof delta?.reasoning === "string"
+				? (delta.reasoning as string)
+				: typeof delta?.reasoning_content === "string"
+					? (delta.reasoning_content as string)
+					: "";
+		const last = choices?.[0]?.finish_reason === "stop" || choices?.[0]?.finish_reason === "length";
 
 		// if the last token is a stop and the tool buffer is not empty, yield it as a generated_text
-		if (choices[0]?.finish_reason === "stop" && toolBuffer.length > 0) {
+		if (choices?.[0]?.finish_reason === "stop" && toolBuffer.length > 0) {
 			yield {
 				token: {
 					id: tokenId++,
@@ -72,7 +79,7 @@ export async function* openAIChatToTextGenerationStream(
 		}
 
 		// weird bug where the parameters are streamed in like this
-		if (choices[0]?.delta?.tool_calls) {
+		if (choices?.[0]?.delta?.tool_calls) {
 			const calls = Array.isArray(choices[0].delta.tool_calls)
 				? choices[0].delta.tool_calls
 				: [choices[0].delta.tool_calls];
@@ -90,13 +97,37 @@ export async function* openAIChatToTextGenerationStream(
 			}
 		}
 
-		if (content) {
-			generatedText = generatedText + content;
+		let combined = "";
+		if (reasoning && reasoning.length > 0) {
+			if (!thinkOpen) {
+				combined += "<think>" + reasoning;
+				thinkOpen = true;
+			} else {
+				combined += reasoning;
+			}
 		}
+
+		if (content && content.length > 0) {
+			const trimmed = content.trim();
+			// Allow <think> tags in content to pass through (for models like DeepSeek R1)
+			if (thinkOpen && trimmed === "</think>") {
+				// close once without duplicating the tag
+				combined += "</think>";
+				thinkOpen = false;
+			} else if (thinkOpen) {
+				combined += "</think>" + content;
+				thinkOpen = false;
+			} else {
+				combined += content;
+			}
+		}
+
+		// Accumulate the combined token into the full text
+		generatedText += combined;
 		const output: TextGenerationStreamOutput = {
 			token: {
 				id: tokenId++,
-				text: content ?? "",
+				text: combined,
 				logprob: 0,
 				special: last,
 			},
@@ -105,30 +136,30 @@ export async function* openAIChatToTextGenerationStream(
 		};
 		yield output;
 
-		const tools = completion.choices[0]?.delta?.tool_calls || [];
-		for (const tool of tools) {
-			if (tool.id) {
-				if (!tool.function?.name) {
-					throw new Error("Tool call without function name");
-				}
-				const toolCallWithParameters: ToolCallWithParameters = {
-					toolCall: {
-						name: tool.function.name,
-						parameters: {},
-						toolId: tool.id,
-					},
-					parameterJsonString: "",
-				};
-				toolCalls.push(toolCallWithParameters);
-			}
+		// Tools removed: ignore tool_calls deltas
+	}
 
-			if (toolCalls.length > 0 && tool.function?.arguments) {
-				toolCalls[toolCalls.length - 1].parameterJsonString += tool.function.arguments;
-			}
-		}
-
-		if (choices[0]?.finish_reason === "tool_calls") {
-			yield prepareToolCalls(toolCalls, tokenId++);
+	// If metadata wasn't yielded from chunks (e.g., from headers), yield it at the end
+	if (!metadataYielded && getRouterMetadata) {
+		const routerMetadata = getRouterMetadata();
+		// Yield if we have either complete router metadata OR just provider info
+		if (
+			(routerMetadata && routerMetadata.route && routerMetadata.model) ||
+			routerMetadata?.provider
+		) {
+			yield {
+				token: {
+					id: tokenId++,
+					text: "",
+					logprob: 0,
+					special: true,
+				},
+				generated_text: null,
+				details: null,
+				routerMetadata,
+			} as TextGenerationStreamOutput & {
+				routerMetadata: { route?: string; model?: string; provider?: string };
+			};
 		}
 	}
 }
@@ -137,9 +168,24 @@ export async function* openAIChatToTextGenerationStream(
  * Transform a non-streaming OpenAI chat completion into a stream of TextGenerationStreamOutput
  */
 export async function* openAIChatToTextGenerationSingle(
-	completion: OpenAI.Chat.Completions.ChatCompletion
+	completion: OpenAI.Chat.Completions.ChatCompletion,
+	getRouterMetadata?: () => { route?: string; model?: string; provider?: string }
 ) {
-	const content = completion.choices[0]?.message?.content || "";
+	const message: NonNullable<OpenAI.Chat.Completions.ChatCompletion.Choice>["message"] & {
+		reasoning?: string;
+		reasoning_content?: string;
+	} = completion.choices?.[0]?.message ?? {};
+	let content: string = message?.content || "";
+	// Provider-dependent reasoning shapes (non-streaming)
+	const r: string =
+		typeof message?.reasoning === "string"
+			? (message.reasoning as string)
+			: typeof message?.reasoning_content === "string"
+				? (message.reasoning_content as string)
+				: "";
+	if (r && r.length > 0) {
+		content = `<think>${r}</think>` + content;
+	}
 	const tokenId = 0;
 
 	// Yield the content as a single token
@@ -152,5 +198,15 @@ export async function* openAIChatToTextGenerationSingle(
 		},
 		generated_text: content,
 		details: null,
-	} as TextGenerationStreamOutput;
+		...(getRouterMetadata
+			? (() => {
+					const metadata = getRouterMetadata();
+					return (metadata && metadata.route && metadata.model) || metadata?.provider
+						? { routerMetadata: metadata }
+						: {};
+				})()
+			: {}),
+	} as TextGenerationStreamOutput & {
+		routerMetadata?: { route?: string; model?: string; provider?: string };
+	};
 }

@@ -4,25 +4,25 @@
 	import { onDestroy, onMount, untrack } from "svelte";
 	import { goto } from "$app/navigation";
 	import { base } from "$app/paths";
-	import { page } from "$app/stores";
+	import { page } from "$app/state";
 
 	import { error } from "$lib/stores/errors";
 	import { createSettingsStore } from "$lib/stores/settings";
-
-	import { shareConversation } from "$lib/shareConversation";
+	import { loading } from "$lib/stores/loading";
 
 	import Toast from "$lib/components/Toast.svelte";
 	import NavMenu from "$lib/components/NavMenu.svelte";
 	import MobileNav from "$lib/components/MobileNav.svelte";
 	import titleUpdate from "$lib/stores/titleUpdate";
-	import DisclaimerModal from "$lib/components/DisclaimerModal.svelte";
+	import WelcomeModal from "$lib/components/WelcomeModal.svelte";
 	import ExpandNavigation from "$lib/components/ExpandNavigation.svelte";
-	import { loginModalOpen } from "$lib/stores/loginModal";
-	import LoginModal from "$lib/components/LoginModal.svelte";
-	import OverloadedModal from "$lib/components/OverloadedModal.svelte";
-	import Search from "$lib/components/chat/Search.svelte";
 	import { setContext } from "svelte";
 	import { handleResponse, useAPIClient } from "$lib/APIClient";
+	import { isAborted } from "$lib/stores/isAborted";
+	import IconShare from "$lib/components/icons/IconShare.svelte";
+	import { shareModal } from "$lib/stores/shareModal";
+	import BackgroundGenerationPoller from "$lib/components/BackgroundGenerationPoller.svelte";
+	import { requireAuthUser } from "$lib/utils/auth";
 
 	let { data = $bindable(), children } = $props();
 
@@ -38,8 +38,6 @@
 
 	let isNavCollapsed = $state(false);
 
-	let overloadedModalOpen = $state(false);
-
 	let errorToastTimeout: ReturnType<typeof setTimeout>;
 	let currentError: string | undefined = $state();
 
@@ -53,14 +51,17 @@
 
 		currentError = $error;
 
-		if (currentError === "Model is overloaded") {
-			overloadedModalOpen = true;
-		}
 		errorToastTimeout = setTimeout(() => {
 			$error = undefined;
 			currentError = undefined;
-		}, 10000);
+		}, 5000);
 	}
+
+	let canShare = $derived(
+		publicConfig.isHuggingChat &&
+			Boolean(page.params?.id) &&
+			page.route.id?.startsWith("/conversation/")
+	);
 
 	async function deleteConversation(id: string) {
 		client
@@ -70,7 +71,7 @@
 			.then(async () => {
 				conversations = conversations.filter((conv) => conv.id !== id);
 
-				if ($page.params.id === id) {
+				if (page.params.id === id) {
 					await goto(`${base}/`, { invalidateAll: true });
 				}
 			})
@@ -92,6 +93,11 @@
 				console.error(err);
 				$error = String(err);
 			});
+	}
+
+	function closeWelcomeModal() {
+		if (requireAuthUser()) return;
+		settings.set({ welcomeModalSeen: true });
 	}
 
 	onDestroy(() => {
@@ -117,13 +123,13 @@
 	const settings = createSettingsStore(data.settings);
 
 	onMount(async () => {
-		if ($page.url.searchParams.has("model")) {
+		if (page.url.searchParams.has("model")) {
 			await settings
 				.instantSet({
-					activeModel: $page.url.searchParams.get("model") ?? $settings.activeModel,
+					activeModel: page.url.searchParams.get("model") ?? $settings.activeModel,
 				})
 				.then(async () => {
-					const query = new URLSearchParams($page.url.searchParams.toString());
+					const query = new URLSearchParams(page.url.searchParams.toString());
 					query.delete("model");
 					await goto(`${base}/?${query.toString()}`, {
 						invalidateAll: true,
@@ -131,24 +137,8 @@
 				});
 		}
 
-		if ($page.url.searchParams.has("tools")) {
-			const tools = $page.url.searchParams.get("tools")?.split(",");
-
-			await settings
-				.instantSet({
-					tools: [...($settings.tools ?? []), ...(tools ?? [])],
-				})
-				.then(async () => {
-					const query = new URLSearchParams($page.url.searchParams.toString());
-					query.delete("tools");
-					await goto(`${base}/?${query.toString()}`, {
-						invalidateAll: true,
-					});
-				});
-		}
-
-		if ($page.url.searchParams.has("token")) {
-			const token = $page.url.searchParams.get("token");
+		if (page.url.searchParams.has("token")) {
+			const token = page.url.searchParams.get("token");
 
 			await fetch(`${base}/api/user/validate-token`, {
 				method: "POST",
@@ -157,48 +147,86 @@
 				goto(`${base}/`, { invalidateAll: true });
 			});
 		}
+
+		// Global keyboard shortcut: New Chat (Ctrl/Cmd + Shift + O)
+		const onKeydown = (e: KeyboardEvent) => {
+			// Ignore when a modal has focus (app is inert)
+			const appEl = document.getElementById("app");
+			if (appEl?.hasAttribute("inert")) return;
+
+			const oPressed = e.key?.toLowerCase() === "o";
+			const metaOrCtrl = e.metaKey || e.ctrlKey;
+			if (oPressed && e.shiftKey && metaOrCtrl) {
+				e.preventDefault();
+				isAborted.set(true);
+				if (requireAuthUser()) return;
+				goto(`${base}/`, { invalidateAll: true });
+			}
+		};
+
+		window.addEventListener("keydown", onKeydown, { capture: true });
+		onDestroy(() => window.removeEventListener("keydown", onKeydown, { capture: true }));
 	});
 
 	let mobileNavTitle = $derived(
-		["/models", "/assistants", "/privacy", "/tools"].includes($page.route.id ?? "")
+		["/models", "/privacy"].includes(page.route.id ?? "")
 			? ""
-			: conversations.find((conv) => conv.id === $page.params.id)?.title
+			: conversations.find((conv) => conv.id === page.params.id)?.title
 	);
 
-	let showDisclaimer = $derived(
-		!$settings.ethicsModalAccepted &&
-			$page.url.pathname !== `${base}/privacy` &&
-			publicConfig.PUBLIC_APP_DISCLAIMER === "1" &&
-			!($page.data.shared === true)
+	// Show the welcome modal once on first app load
+	let showWelcome = $derived(
+		!$settings.welcomeModalSeen &&
+			!(page.data.shared === true && page.route.id?.startsWith("/conversation/"))
 	);
 </script>
 
 <svelte:head>
-	<title>{publicConfig.PUBLIC_APP_NAME}</title>
-	<meta name="description" content="The first open source alternative to ChatGPT. 💪" />
+	<title>{publicConfig.PUBLIC_APP_NAME} - Chat with AI models</title>
+	<meta name="description" content={publicConfig.PUBLIC_APP_DESCRIPTION} />
 	<meta name="twitter:card" content="summary_large_image" />
 	<meta name="twitter:site" content="@huggingface" />
+	<meta name="twitter:title" content="{publicConfig.PUBLIC_APP_NAME} - Chat with AI models" />
+	<meta name="twitter:description" content={publicConfig.PUBLIC_APP_DESCRIPTION} />
+	<meta
+		name="twitter:image"
+		content="{publicConfig.PUBLIC_ORIGIN || page.url.origin}{publicConfig.assetPath}/thumbnail.png"
+	/>
+	<meta name="twitter:image:alt" content="{publicConfig.PUBLIC_APP_NAME} preview" />
 
-	<!-- use those meta tags everywhere except on the share assistant page -->
+	<!-- use those meta tags everywhere except on special listing pages -->
 	<!-- feel free to refacto if there's a better way -->
-	{#if !$page.url.pathname.includes("/assistant/") && $page.route.id !== "/assistants" && !$page.url.pathname.includes("/models/") && !$page.url.pathname.includes("/tools")}
-		<meta property="og:title" content={publicConfig.PUBLIC_APP_NAME} />
+	{#if !page.url.pathname.includes("/models/")}
+		<meta property="og:title" content="{publicConfig.PUBLIC_APP_NAME} - Chat with AI models" />
 		<meta property="og:type" content="website" />
-		<meta property="og:url" content="{publicConfig.PUBLIC_ORIGIN || $page.url.origin}{base}" />
+		<meta property="og:url" content="{publicConfig.PUBLIC_ORIGIN || page.url.origin}{base}" />
 		<meta property="og:image" content="{publicConfig.assetPath}/thumbnail.png" />
 		<meta property="og:description" content={publicConfig.PUBLIC_APP_DESCRIPTION} />
+		<meta property="og:site_name" content={publicConfig.PUBLIC_APP_NAME} />
+		<meta property="og:locale" content="en_US" />
 	{/if}
-	<link rel="icon" href="{publicConfig.assetPath}/favicon.ico" sizes="32x32" />
 	<link rel="icon" href="{publicConfig.assetPath}/icon.svg" type="image/svg+xml" />
+	{#if publicConfig.PUBLIC_ORIGIN}
+		<link
+			rel="icon"
+			href="{publicConfig.assetPath}/favicon.svg"
+			type="image/svg+xml"
+			media="(prefers-color-scheme: light)"
+		/>
+		<link
+			rel="icon"
+			href="{publicConfig.assetPath}/favicon-dark.svg"
+			type="image/svg+xml"
+			media="(prefers-color-scheme: dark)"
+		/>
+	{:else}
+		<link rel="icon" href="{publicConfig.assetPath}/favicon-dev.svg" type="image/svg+xml" />
+	{/if}
 	<link rel="apple-touch-icon" href="{publicConfig.assetPath}/apple-touch-icon.png" />
 	<link rel="manifest" href="{publicConfig.assetPath}/manifest.json" />
 
-	{#if publicConfig.PUBLIC_PLAUSIBLE_SCRIPT_URL && publicConfig.PUBLIC_ORIGIN}
-		<script
-			defer
-			data-domain={new URL(publicConfig.PUBLIC_ORIGIN).hostname}
-			src={publicConfig.PUBLIC_PLAUSIBLE_SCRIPT_URL}
-		></script>
+	{#if publicConfig.PUBLIC_PLAUSIBLE_SCRIPT_URL}
+		<script async src={publicConfig.PUBLIC_PLAUSIBLE_SCRIPT_URL}></script>
 	{/if}
 
 	{#if publicConfig.PUBLIC_APPLE_APP_ID}
@@ -206,23 +234,11 @@
 	{/if}
 </svelte:head>
 
-{#if showDisclaimer}
-	<DisclaimerModal on:close={() => ($settings.ethicsModalAccepted = true)} />
+{#if showWelcome}
+	<WelcomeModal close={closeWelcomeModal} />
 {/if}
 
-{#if $loginModalOpen}
-	<LoginModal
-		on:close={() => {
-			$loginModalOpen = false;
-		}}
-	/>
-{/if}
-
-{#if overloadedModalOpen && publicConfig.isHuggingChat}
-	<OverloadedModal onClose={() => (overloadedModalOpen = false)} />
-{/if}
-
-<Search />
+<BackgroundGenerationPoller />
 
 <div
 	class="fixed grid h-full w-screen grid-cols-1 grid-rows-[auto,1fr] overflow-hidden text-smd {!isNavCollapsed
@@ -237,30 +253,55 @@
 			: 'left-0'} *:transition-transform"
 	/>
 
+	{#if canShare}
+		<button
+			type="button"
+			class="hidden size-8 items-center justify-center gap-2 rounded-xl border border-gray-200 bg-white/90 text-sm font-medium text-gray-700 shadow-sm hover:bg-white/60 hover:text-gray-500 dark:border-gray-700 dark:bg-gray-800/80 dark:text-gray-200 dark:hover:bg-gray-700 md:absolute md:right-6 md:top-5 md:flex
+				{$loading ? 'cursor-not-allowed opacity-40' : ''}"
+			onclick={() => shareModal.open()}
+			aria-label="Share conversation"
+			disabled={$loading}
+		>
+			<IconShare />
+		</button>
+	{/if}
+
 	<MobileNav title={mobileNavTitle}>
 		<NavMenu
 			{conversations}
 			user={data.user}
-			canLogin={!data.user && data.loginEnabled}
-			on:shareConversation={(ev) => shareConversation(ev.detail.id, ev.detail.title)}
-			on:deleteConversation={(ev) => deleteConversation(ev.detail)}
-			on:editConversationTitle={(ev) => editConversationTitle(ev.detail.id, ev.detail.title)}
+			ondeleteConversation={(id) => deleteConversation(id)}
+			oneditConversationTitle={(payload) => editConversationTitle(payload.id, payload.title)}
 		/>
 	</MobileNav>
 	<nav
-		class="grid max-h-screen grid-cols-1 grid-rows-[auto,1fr,auto] overflow-hidden *:w-[290px] max-md:hidden"
+		class="grid max-h-dvh grid-cols-1 grid-rows-[auto,1fr,auto] overflow-hidden *:w-[290px] max-md:hidden"
 	>
 		<NavMenu
 			{conversations}
 			user={data.user}
-			canLogin={!data.user && data.loginEnabled}
-			on:shareConversation={(ev) => shareConversation(ev.detail.id, ev.detail.title)}
-			on:deleteConversation={(ev) => deleteConversation(ev.detail)}
-			on:editConversationTitle={(ev) => editConversationTitle(ev.detail.id, ev.detail.title)}
+			ondeleteConversation={(id) => deleteConversation(id)}
+			oneditConversationTitle={(payload) => editConversationTitle(payload.id, payload.title)}
 		/>
 	</nav>
 	{#if currentError}
 		<Toast message={currentError} />
 	{/if}
 	{@render children?.()}
+
+	{#if publicConfig.PUBLIC_PLAUSIBLE_SCRIPT_URL}
+		<script>
+			(window.plausible =
+				window.plausible ||
+				function () {
+					(plausible.q = plausible.q || []).push(arguments);
+				}),
+				(plausible.init =
+					plausible.init ||
+					function (i) {
+						plausible.o = i || {};
+					});
+			plausible.init();
+		</script>
+	{/if}
 </div>

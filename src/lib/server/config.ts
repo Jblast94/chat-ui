@@ -151,7 +151,17 @@ export const ready = (async () => {
 	}
 })();
 
-type ConfigProxy = ConfigManager & { [K in ConfigKey]: string };
+type ExtraConfigKeys =
+	| "HF_TOKEN"
+	| "OLD_MODELS"
+	| "ENABLE_ASSISTANTS"
+	| "METRICS_ENABLED"
+	| "METRICS_PORT"
+	| "MCP_SERVERS"
+	| "MCP_FORWARD_HF_USER_TOKEN"
+	| "EXA_API_KEY";
+
+type ConfigProxy = ConfigManager & { [K in ConfigKey | ExtraConfigKeys]: string };
 
 export const config: ConfigProxy = new Proxy(configManager, {
 	get(target, prop, receiver) {

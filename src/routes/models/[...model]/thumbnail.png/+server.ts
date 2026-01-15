@@ -10,6 +10,7 @@ import InterBold from "$lib/server/fonts/Inter-Bold.ttf";
 import { base } from "$app/paths";
 import { models } from "$lib/server/models";
 import { render } from "svelte/server";
+import { config } from "$lib/server/config";
 
 export const GET: RequestHandler = (async ({ params }) => {
 	const model = models.find(({ id }) => id === params.model);
@@ -20,11 +21,15 @@ export const GET: RequestHandler = (async ({ params }) => {
 	const renderedComponent = render(ModelThumbnail, {
 		props: {
 			name: model.name,
-			logoUrl: model.logoUrl,
+			isHuggingChat: config.isHuggingChat,
 		},
 	});
 
-	const reactLike = html("<style>" + renderedComponent.head + "</style>" + renderedComponent.body);
+	// satori-html returns a VNode (React-like). satori's TS types expect ReactNode,
+	// so cast here to satisfy the compiler without pulling in React types.
+	const reactLike = html(
+		"<style>" + renderedComponent.head + "</style>" + renderedComponent.body
+	) as unknown as never;
 
 	const svg = await satori(reactLike, {
 		width: 1200,
@@ -49,7 +54,8 @@ export const GET: RequestHandler = (async ({ params }) => {
 		.render()
 		.asPng();
 
-	return new Response(png, {
+	// Return a Uint8Array so BodyInit matches cleanly without generics mismatch
+	return new Response(new Uint8Array(png), {
 		headers: {
 			"Content-Type": "image/png",
 		},

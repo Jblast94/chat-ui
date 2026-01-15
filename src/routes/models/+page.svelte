@@ -6,9 +6,11 @@
 	import { page } from "$app/state";
 
 	import CarbonHelpFilled from "~icons/carbon/help-filled";
-	import CarbonTools from "~icons/carbon/tools";
-	import CarbonImage from "~icons/carbon/image";
+	import LucideHammer from "~icons/lucide/hammer";
+	import LucideImage from "~icons/lucide/image";
+	import LucideSettings from "~icons/lucide/settings";
 	import { useSettingsStore } from "$lib/stores/settings";
+	import { goto } from "$app/navigation";
 	interface Props {
 		data: PageData;
 	}
@@ -18,6 +20,21 @@
 	const settings = useSettingsStore();
 
 	const publicConfig = usePublicConfig();
+
+	// Local filter state for model search (hyphen/space insensitive)
+	let modelFilter = $state("");
+	const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ");
+	let queryTokens = $derived(normalize(modelFilter).trim().split(/\s+/).filter(Boolean));
+
+	// Filtered models list
+	let filteredModels = $derived(
+		data.models
+			.filter((el) => !el.unlisted)
+			.filter((el) => {
+				const haystack = normalize(`${el.id} ${el.name ?? ""} ${el.displayName ?? ""}`);
+				return queryTokens.every((q) => haystack.includes(q));
+			})
+	);
 </script>
 
 <svelte:head>
@@ -33,11 +50,11 @@
 <div class="scrollbar-custom h-full overflow-y-auto py-12 max-sm:pt-8 md:py-24">
 	<div class="pt-42 mx-auto flex flex-col px-5 xl:w-[60rem] 2xl:w-[64rem]">
 		<div class="flex items-center">
-			<h1 class="text-2xl font-bold">Models</h1>
+			<h1 class="text-xl font-bold sm:text-2xl">Models</h1>
 			{#if publicConfig.isHuggingChat}
 				<a
-					href="https://huggingface.co/spaces/huggingchat/chat-ui/discussions/372"
-					class="ml-auto dark:text-gray-400 dark:hover:text-gray-300"
+					href="https://huggingface.co/docs/inference-providers"
+					class="ml-auto text-gray-500 hover:text-gray-600 dark:text-gray-400 dark:hover:text-gray-300"
 					target="_blank"
 					aria-label="Hub discussion about models"
 				>
@@ -45,98 +62,125 @@
 				</a>
 			{/if}
 		</div>
-		<h2 class="text-gray-500">All models available on {publicConfig.PUBLIC_APP_NAME}</h2>
-		<div class="mt-8 grid grid-cols-1 gap-3 sm:gap-5 xl:grid-cols-2">
-			{#each data.models.filter((el) => !el.unlisted) as model, index (model.id)}
-				<div
-					aria-label="Model card"
-					role="region"
-					class="relative flex flex-col gap-2 overflow-hidden rounded-xl border bg-gray-50/50 px-6 py-5 shadow hover:bg-gray-50 hover:shadow-inner dark:border-gray-800/70 dark:bg-gray-950/20 dark:hover:bg-gray-950/40"
-					class:active-model={model.id === $settings.activeModel}
-				>
+		<h2 class="text-gray-500">
+			All models available{#if publicConfig.isHuggingChat}&nbsp;via <a
+					target="_blank"
+					href="https://huggingface.co/inference/models"
+					class="underline decoration-gray-300 hover:decoration-gray-500 dark:decoration-gray-600 dark:hover:decoration-gray-500"
+					>Inference Providers</a
+				>{/if}
+		</h2>
+
+		<!-- Filter input -->
+		<input
+			type="search"
+			bind:value={modelFilter}
+			placeholder="Search by name"
+			aria-label="Search models by name or id"
+			class="mt-4 w-full rounded-3xl border border-gray-300 bg-white px-5 py-2 text-[15px]
+				placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-300
+				dark:border-gray-700 dark:bg-gray-900 dark:focus:ring-gray-700"
+		/>
+
+		<div class="mt-6 min-h-[50vh]">
+			<div
+				class="overflow-hidden rounded-2xl border border-gray-200/60 bg-white shadow-sm dark:border-gray-800 dark:bg-gray-900"
+			>
+				{#each filteredModels as model, index (model.id)}
+					{@const isActive = model.id === $settings.activeModel}
+					{@const isLast = index === filteredModels.length - 1}
 					<a
 						href="{base}/models/{model.id}"
-						class="absolute inset-0 z-10"
-						aria-label="View details for {model.displayName}"
-					></a>
-					<div class="flex items-center justify-between gap-1">
-						{#if model.logoUrl}
-							<img
-								class="overflown aspect-square size-6 rounded border dark:border-gray-700"
-								src={model.logoUrl}
-								alt="{model.displayName} logo"
-							/>
-						{:else}
-							<div
-								class="size-6 rounded border border-transparent bg-gray-300 dark:bg-gray-800"
-								aria-hidden="true"
-							></div>
-						{/if}
-						<div class="flex items-center gap-1">
-							{#if model.tools}
-								<span
-									title="This model supports tools."
-									class="ml-auto grid size-[21px] place-items-center rounded-lg border border-purple-300 dark:border-purple-700"
-									aria-label="Model supports tools"
-									role="img"
-								>
-									<CarbonTools class="text-xxs text-purple-700 dark:text-purple-500" />
-								</span>
+						aria-label="Model card for {model.displayName}"
+						class="group flex cursor-pointer items-center gap-2 p-3 sm:gap-4 sm:p-4
+							{isActive
+							? 'bg-gray-50 dark:bg-gray-800'
+							: 'bg-white hover:bg-gray-50 dark:bg-gray-900 dark:hover:bg-gray-800'}
+							{isLast ? '' : 'border-b border-gray-100 dark:border-gray-800'}"
+					>
+						<!-- Avatar -->
+						<div class="flex-shrink-0">
+							{#if model.logoUrl}
+								<img
+									alt={model.displayName}
+									class="size-8 rounded-lg border border-gray-100 bg-gray-50 object-cover dark:border-gray-700 dark:bg-gray-100 sm:size-10"
+									src={model.logoUrl}
+								/>
+							{:else}
+								<div
+									class="h-10 w-10 rounded-lg border border-gray-100 bg-gray-200 dark:border-gray-700 dark:bg-gray-700"
+									aria-hidden="true"
+								></div>
 							{/if}
-							{#if model.multimodal}
-								<span
-									title="This model is multimodal and supports image inputs natively."
-									class="ml-auto flex size-[21px] items-center justify-center rounded-lg border border-blue-700 dark:border-blue-500"
-									aria-label="Model is multimodal"
-									role="img"
+						</div>
+
+						<!-- Content -->
+						<div class="min-w-0 flex-1">
+							<div class="flex items-center gap-2">
+								<h3
+									class="truncate font-medium text-gray-900 dark:text-gray-200 max-sm:text-xs"
+									class:font-bold={isActive}
+									class:dark:text-white={isActive}
 								>
-									<CarbonImage class="text-xxs text-blue-700 dark:text-blue-500" />
-								</span>
-							{/if}
-							{#if model.reasoning}
-								<span
-									title="This model supports reasoning."
-									class="ml-auto grid size-[21px] place-items-center rounded-lg border border-purple-300 dark:border-purple-700"
-									aria-label="Model supports reasoning"
-									role="img"
-								>
-									<svg
-										xmlns="http://www.w3.org/2000/svg"
-										width="14"
-										height="14"
-										viewBox="0 0 32 32"
+									{model.displayName}
+								</h3>
+								{#if index === 0 && model.isRouter && !isActive}
+									<span
+										class="rounded border border-gray-200 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-gray-500 dark:border-gray-700 dark:text-gray-400"
 									>
-										<path
-											class="stroke-purple-700"
-											style="stroke-width: 2; fill: none; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 50;"
-											d="M16 6v3.33M16 6c0-2.65 3.25-4.3 5.4-2.62 1.2.95 1.6 2.65.95 4.04a3.63 3.63 0 0 1 4.61.16 3.45 3.45 0 0 1 .46 4.37 5.32 5.32 0 0 1 1.87 4.75c-.22 1.66-1.39 3.6-3.07 4.14M16 6c0-2.65-3.25-4.3-5.4-2.62a3.37 3.37 0 0 0-.95 4.04 3.65 3.65 0 0 0-4.6.16 3.37 3.37 0 0 0-.49 4.27 5.57 5.57 0 0 0-1.85 4.85 5.3 5.3 0 0 0 3.07 4.15M16 9.33v17.34m0-17.34c0 2.18 1.82 4 4 4m6.22 7.5c.67 1.3.56 2.91-.27 4.11a4.05 4.05 0 0 1-4.62 1.5c0 1.53-1.05 2.9-2.66 2.9A2.7 2.7 0 0 1 16 26.66m10.22-5.83a4.05 4.05 0 0 0-3.55-2.17m-16.9 2.18a4.05 4.05 0 0 0 .28 4.1c1 1.44 2.92 2.09 4.59 1.5 0 1.52 1.12 2.88 2.7 2.88A2.7 2.7 0 0 0 16 26.67M5.78 20.85a4.04 4.04 0 0 1 3.55-2.18"
-										/>
-									</svg>
-								</span>
+										Default
+									</span>
+								{/if}
+							</div>
+							<p class="truncate pr-4 text-xs text-gray-500 dark:text-gray-400 sm:text-[13px]">
+								{model.isRouter
+									? "Routes your messages to the best model for your request."
+									: model.description || "-"}
+							</p>
+						</div>
+
+						<!-- Icons and badges -->
+						<div class="flex flex-shrink-0 items-center gap-1.5">
+							{#if $settings.toolsOverrides?.[model.id] ?? (model as { supportsTools?: boolean }).supportsTools}
+								<div
+									title="This model supports tool calling (functions)."
+									class="rounded-md bg-purple-50 p-1.5 text-purple-600 dark:bg-purple-900/20 dark:text-purple-400"
+								>
+									<LucideHammer class="size-3 sm:size-3.5" />
+								</div>
 							{/if}
-							{#if model.id === $settings.activeModel}
+							{#if $settings.multimodalOverrides?.[model.id] ?? model.multimodal}
+								<div
+									title="This model is multimodal and supports image inputs natively."
+									class="rounded-md bg-blue-50 p-1.5 text-blue-600 dark:bg-blue-900/20 dark:text-blue-400"
+								>
+									<LucideImage class="size-3 sm:size-3.5" />
+								</div>
+							{/if}
+							<button
+								type="button"
+								title="Model settings"
+								aria-label="Model settings for {model.displayName}"
+								class="rounded-md border border-gray-200 p-1.5 text-gray-500 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-400 dark:hover:bg-gray-700"
+								onclick={(e) => {
+									e.preventDefault();
+									e.stopPropagation();
+									goto(`${base}/settings/${model.id}`);
+								}}
+							>
+								<LucideSettings class="size-3 sm:size-3.5" />
+							</button>
+							{#if isActive}
 								<span
-									class="rounded-full border border-blue-500 bg-blue-500/5 px-2 py-0.5 text-xs text-blue-500 dark:border-blue-500 dark:bg-blue-500/10"
+									class="rounded-full bg-black px-2.5 py-1 text-xs font-bold text-white shadow-md dark:bg-white dark:text-black"
 								>
 									Active
 								</span>
-							{:else if index === 0}
-								<span
-									class="rounded-full border border-gray-300 px-2 py-0.5 text-xs text-gray-500 dark:border-gray-500 dark:text-gray-400"
-								>
-									Default
-								</span>
 							{/if}
 						</div>
-					</div>
-					<span class="flex items-center gap-2 font-semibold">
-						{model.displayName}
-					</span>
-					<span class="whitespace-pre-wrap text-sm text-gray-500 dark:text-gray-400">
-						{model.description || "-"}
-					</span>
-				</div>
-			{/each}
+					</a>
+				{/each}
+			</div>
 		</div>
 	</div>
 </div>

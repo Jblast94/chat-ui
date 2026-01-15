@@ -1,30 +1,33 @@
 <script lang="ts">
-	import { createEventDispatcher, onMount, tick } from "svelte";
+	import { onMount, tick } from "svelte";
 
-	import HoverTooltip from "$lib/components/HoverTooltip.svelte";
-	import IconInternet from "$lib/components/icons/IconInternet.svelte";
-	import IconImageGen from "$lib/components/icons/IconImageGen.svelte";
-	import IconPaperclip from "$lib/components/icons/IconPaperclip.svelte";
-	import { useSettingsStore } from "$lib/stores/settings";
-	import { webSearchParameters } from "$lib/stores/webSearchParameters";
-	import {
-		documentParserToolId,
-		fetchUrlToolId,
-		imageGenToolId,
-		webSearchToolId,
-	} from "$lib/utils/toolIds";
-	import type { Assistant } from "$lib/types/Assistant";
-	import { page } from "$app/state";
-	import type { ToolFront } from "$lib/types/Tool";
-	import ToolLogo from "../ToolLogo.svelte";
-	import { goto } from "$app/navigation";
-	import { base } from "$app/paths";
-	import IconAdd from "~icons/carbon/add";
-	import { captureScreen } from "$lib/utils/screenshot";
-	import IconScreenshot from "../icons/IconScreenshot.svelte";
-	import { loginModalOpen } from "$lib/stores/loginModal";
+	import { afterNavigate } from "$app/navigation";
+
+	import { DropdownMenu } from "bits-ui";
+	import IconPlus from "~icons/lucide/plus";
+	import CarbonImage from "~icons/carbon/image";
+	import CarbonDocument from "~icons/carbon/document";
+	import CarbonUpload from "~icons/carbon/upload";
+	import CarbonLink from "~icons/carbon/link";
+	import CarbonChevronRight from "~icons/carbon/chevron-right";
+	import CarbonClose from "~icons/carbon/close";
+	import UrlFetchModal from "./UrlFetchModal.svelte";
+	import { TEXT_MIME_ALLOWLIST, IMAGE_MIME_ALLOWLIST_DEFAULT } from "$lib/constants/mime";
+	import MCPServerManager from "$lib/components/mcp/MCPServerManager.svelte";
+	import IconMCP from "$lib/components/icons/IconMCP.svelte";
 
 	import { isVirtualKeyboard } from "$lib/utils/isVirtualKeyboard";
+	import { requireAuthUser } from "$lib/utils/auth";
+	import {
+		enabledServersCount,
+		selectedServerIds,
+		allMcpServers,
+		toggleServer,
+		disableAllServers,
+	} from "$lib/stores/mcpServers";
+	import { getMcpServerFaviconUrl } from "$lib/utils/favicon";
+	import { page } from "$app/state";
+
 	interface Props {
 		files?: File[];
 		mimeTypes?: string[];
@@ -32,12 +35,14 @@
 		placeholder?: string;
 		loading?: boolean;
 		disabled?: boolean;
-		assistant?: Assistant | undefined;
-		modelHasTools?: boolean;
+		// tools removed
 		modelIsMultimodal?: boolean;
+		// Whether the currently selected model supports tool calling (incl. overrides)
+		modelSupportsTools?: boolean;
 		children?: import("svelte").Snippet;
 		onPaste?: (e: ClipboardEvent) => void;
 		focused?: boolean;
+		onsubmit?: () => void;
 	}
 
 	let {
@@ -47,44 +52,99 @@
 		placeholder = "",
 		loading = false,
 		disabled = false,
-		assistant = undefined,
-		modelHasTools = false,
+
 		modelIsMultimodal = false,
+		modelSupportsTools = true,
 		children,
 		onPaste,
 		focused = $bindable(false),
+		onsubmit,
 	}: Props = $props();
 
 	const onFileChange = async (e: Event) => {
 		if (!e.target) return;
 		const target = e.target as HTMLInputElement;
-		files = [...files, ...(target.files ?? [])];
-
-		if (files.some((file) => file.type.startsWith("application/"))) {
-			await settings.instantSet({
-				tools: [...($settings.tools ?? []), documentParserToolId],
-			});
-		}
+		const selected = Array.from(target.files ?? []);
+		if (selected.length === 0) return;
+		files = [...files, ...selected];
+		await tick();
+		void focusTextarea();
 	};
 
 	let textareaElement: HTMLTextAreaElement | undefined = $state();
 	let isCompositionOn = $state(false);
+	let blurTimeout: ReturnType<typeof setTimeout> | null = $state(null);
 
-	const dispatch = createEventDispatcher<{ submit: void }>();
+	let fileInputEl: HTMLInputElement | undefined = $state();
+	let isUrlModalOpen = $state(false);
+	let isMcpManagerOpen = $state(false);
+	let isDropdownOpen = $state(false);
+
+	function openPickerWithAccept(accept: string) {
+		if (!fileInputEl) return;
+		const allAccept = mimeTypes.join(",");
+		fileInputEl.setAttribute("accept", accept);
+		fileInputEl.click();
+		queueMicrotask(() => fileInputEl?.setAttribute("accept", allAccept));
+	}
+
+	function openFilePickerText() {
+		const textAccept =
+			mimeTypes.filter((m) => !(m === "image/*" || m.startsWith("image/"))).join(",") ||
+			TEXT_MIME_ALLOWLIST.join(",");
+		openPickerWithAccept(textAccept);
+	}
+
+	function openFilePickerImage() {
+		const imageAccept =
+			mimeTypes.filter((m) => m === "image/*" || m.startsWith("image/")).join(",") ||
+			IMAGE_MIME_ALLOWLIST_DEFAULT.join(",");
+		openPickerWithAccept(imageAccept);
+	}
+
+	const waitForAnimationFrame = () =>
+		typeof requestAnimationFrame === "function"
+			? new Promise<void>((resolve) => {
+					requestAnimationFrame(() => resolve());
+				})
+			: Promise.resolve();
+
+	async function focusTextarea() {
+		if (page.data.shared && page.data.loginEnabled && !page.data.user) return;
+		if (!textareaElement || textareaElement.disabled || isVirtualKeyboard()) return;
+		if (typeof document !== "undefined" && document.activeElement === textareaElement) return;
+
+		await tick();
+
+		if (typeof requestAnimationFrame === "function") {
+			await waitForAnimationFrame();
+			await waitForAnimationFrame();
+		}
+
+		if (!textareaElement || textareaElement.disabled || isVirtualKeyboard()) return;
+
+		try {
+			textareaElement.focus({ preventScroll: true });
+		} catch {
+			textareaElement.focus();
+		}
+	}
+
+	function handleFetchedFiles(newFiles: File[]) {
+		if (!newFiles?.length) return;
+		files = [...files, ...newFiles];
+		queueMicrotask(async () => {
+			await tick();
+			void focusTextarea();
+		});
+	}
 
 	onMount(() => {
-		if (!isVirtualKeyboard()) {
-			textareaElement?.focus();
-		}
-		function onFormSubmit() {
-			adjustTextareaHeight();
-		}
+		void focusTextarea();
+	});
 
-		const formEl = textareaElement?.closest("form");
-		formEl?.addEventListener("submit", onFormSubmit);
-		return () => {
-			formEl?.removeEventListener("submit", onFormSubmit);
-		};
+	afterNavigate(() => {
+		void focusTextarea();
 	});
 
 	function adjustTextareaHeight() {
@@ -100,6 +160,12 @@
 		}
 	}
 
+	$effect(() => {
+		if (!textareaElement) return;
+		void value;
+		adjustTextareaHeight();
+	});
+
 	function handleKeydown(event: KeyboardEvent) {
 		if (
 			event.key === "Enter" &&
@@ -109,43 +175,44 @@
 			value.trim() !== ""
 		) {
 			event.preventDefault();
-			adjustTextareaHeight();
 			tick();
-			dispatch("submit");
+			onsubmit?.();
 		}
 	}
 
-	const settings = useSettingsStore();
+	function handleFocus() {
+		if (requireAuthUser()) {
+			return;
+		}
+		if (blurTimeout) {
+			clearTimeout(blurTimeout);
+			blurTimeout = null;
+		}
+		focused = true;
+	}
 
-	// tool section
+	function handleBlur() {
+		if (!isVirtualKeyboard()) {
+			focused = false;
+			return;
+		}
 
-	let webSearchIsOn = $derived(
-		modelHasTools
-			? ($settings.tools?.includes(webSearchToolId) ?? false) ||
-					($settings.tools?.includes(fetchUrlToolId) ?? false)
-			: $webSearchParameters.useSearch
+		if (blurTimeout) {
+			clearTimeout(blurTimeout);
+		}
+
+		blurTimeout = setTimeout(() => {
+			blurTimeout = null;
+			focused = false;
+		});
+	}
+
+	// Show file upload when any mime is allowed (text always; images if multimodal)
+	let showFileUpload = $derived(mimeTypes.length > 0);
+	let showNoTools = $derived(!showFileUpload);
+	let selectedServers = $derived(
+		$allMcpServers.filter((server) => $selectedServerIds.has(server.id))
 	);
-	let imageGenIsOn = $derived($settings.tools?.includes(imageGenToolId) ?? false);
-
-	let documentParserIsOn = $derived(
-		modelHasTools && files.length > 0 && files.some((file) => file.type.startsWith("application/"))
-	);
-
-	let extraTools = $derived(
-		page.data.tools
-			.filter((t: ToolFront) => $settings.tools?.includes(t._id))
-			.filter(
-				(t: ToolFront) =>
-					![documentParserToolId, imageGenToolId, webSearchToolId, fetchUrlToolId].includes(t._id)
-			) satisfies ToolFront[]
-	);
-
-	let showWebSearch = $derived(!assistant);
-	let showImageGen = $derived(modelHasTools && !assistant);
-	let showFileUpload = $derived((modelIsMultimodal || modelHasTools) && mimeTypes.length > 0);
-	let showExtraTools = $derived(modelHasTools && !assistant);
-
-	let showNoTools = $derived(!showWebSearch && !showImageGen && !showFileUpload && !showExtraTools);
 </script>
 
 <div class="flex min-h-full flex-1 flex-col" onpaste={onPaste}>
@@ -153,24 +220,18 @@
 		rows="1"
 		tabindex="0"
 		inputmode="text"
-		class="scrollbar-custom max-h-[4lh] w-full resize-none overflow-y-auto overflow-x-hidden border-0 bg-transparent px-2.5 py-2.5 outline-none focus:ring-0 focus-visible:ring-0 sm:px-3"
+		class="scrollbar-custom max-h-[4lh] w-full resize-none overflow-y-auto overflow-x-hidden border-0 bg-transparent px-2.5 py-2.5 outline-none focus:ring-0 focus-visible:ring-0 sm:px-3 md:max-h-[8lh]"
 		class:text-gray-400={disabled}
 		bind:value
 		bind:this={textareaElement}
 		onkeydown={handleKeydown}
 		oncompositionstart={() => (isCompositionOn = true)}
 		oncompositionend={() => (isCompositionOn = false)}
-		oninput={adjustTextareaHeight}
-		onbeforeinput={(ev) => {
-			if (page.data.loginRequired) {
-				ev.preventDefault();
-				$loginModalOpen = true;
-			}
-		}}
 		{placeholder}
 		{disabled}
-		onfocus={() => (focused = true)}
-		onblur={() => (focused = false)}
+		onfocus={handleFocus}
+		onblur={handleBlur}
+		onbeforeinput={requireAuthUser}
 	></textarea>
 
 	{#if !showNoTools}
@@ -179,173 +240,226 @@
 				"scrollbar-custom -ml-0.5 flex max-w-[calc(100%-40px)] flex-wrap items-center justify-start gap-2.5 px-3 pb-2.5 pt-1.5 text-gray-500 dark:text-gray-400 max-md:flex-nowrap max-md:overflow-x-auto sm:gap-2",
 			]}
 		>
-			{#if showWebSearch}
-				<HoverTooltip
-					label="Search the web"
-					position="top"
-					TooltipClassNames="text-xs !text-left !w-auto whitespace-nowrap !py-1 !mb-0 max-sm:hidden {webSearchIsOn
-						? 'hidden'
-						: ''}"
-				>
-					<button
-						class="base-tool"
-						class:active-tool={webSearchIsOn}
-						disabled={loading}
-						onclick={async (e) => {
-							e.preventDefault();
-							if (modelHasTools) {
-								if (webSearchIsOn) {
-									await settings.instantSet({
-										tools: ($settings.tools ?? []).filter(
-											(t) => t !== webSearchToolId && t !== fetchUrlToolId
-										),
-									});
-								} else {
-									await settings.instantSet({
-										tools: [...($settings.tools ?? []), webSearchToolId, fetchUrlToolId],
-									});
-								}
-							} else {
-								$webSearchParameters.useSearch = !webSearchIsOn;
-							}
-						}}
-					>
-						<IconInternet classNames="text-xl" />
-						{#if webSearchIsOn}
-							Search
-						{/if}
-					</button>
-				</HoverTooltip>
-			{/if}
-			{#if showImageGen}
-				<HoverTooltip
-					label="Generate	images"
-					position="top"
-					TooltipClassNames="text-xs !text-left !w-auto whitespace-nowrap !py-1 !mb-0 max-sm:hidden {imageGenIsOn
-						? 'hidden'
-						: ''}"
-				>
-					<button
-						class="base-tool"
-						class:active-tool={imageGenIsOn}
-						disabled={loading}
-						onclick={async (e) => {
-							e.preventDefault();
-							if (modelHasTools) {
-								if (imageGenIsOn) {
-									await settings.instantSet({
-										tools: ($settings.tools ?? []).filter((t) => t !== imageGenToolId),
-									});
-								} else {
-									await settings.instantSet({
-										tools: [...($settings.tools ?? []), imageGenToolId],
-									});
-								}
-							}
-						}}
-					>
-						<IconImageGen classNames="text-xl" />
-						{#if imageGenIsOn}
-							Image Gen
-						{/if}
-					</button>
-				</HoverTooltip>
-			{/if}
 			{#if showFileUpload}
-				{@const mimeTypesString = mimeTypes
-					.map((m) => {
-						// if the mime type ends in *, grab the first part so image/* becomes image
-						if (m.endsWith("*")) {
-							return m.split("/")[0];
-						}
-						// otherwise, return the second part for example application/pdf becomes pdf
-						return m.split("/")[1];
-					})
-					.join(", ")}
 				<div class="flex items-center">
-					<HoverTooltip
-						label={mimeTypesString.includes("*")
-							? "Upload any file"
-							: `Upload ${mimeTypesString} files`}
-						position="top"
-						TooltipClassNames="text-xs !text-left !w-auto whitespace-nowrap !py-1 !mb-0 max-sm:hidden"
-					>
-						<label class="base-tool relative" class:active-tool={documentParserIsOn}>
-							<input
-								disabled={loading}
-								class="absolute hidden size-0"
-								aria-label="Upload file"
-								type="file"
-								onchange={onFileChange}
-								accept={mimeTypes.join(",")}
-							/>
-							<IconPaperclip classNames="text-xl" />
-							{#if documentParserIsOn}
-								Document Parser
-							{/if}
-						</label>
-					</HoverTooltip>
-				</div>
-				{#if mimeTypes.includes("image/*")}
-					<HoverTooltip
-						label="Capture screenshot"
-						position="top"
-						TooltipClassNames="text-xs !text-left !w-auto whitespace-nowrap !py-1 !mb-0 max-sm:hidden"
-					>
-						<button
-							class="base-tool"
-							onclick={async (e) => {
-								e.preventDefault();
-								const screenshot = await captureScreen();
-
-								// Convert base64 to blob
-								const base64Response = await fetch(screenshot);
-								const blob = await base64Response.blob();
-
-								// Create a File object from the blob
-								const file = new File([blob], "screenshot.png", { type: "image/png" });
-
-								files = [...files, file];
-							}}
-						>
-							<IconScreenshot classNames="text-xl" />
-						</button>
-					</HoverTooltip>
-				{/if}
-			{/if}
-			{#if showExtraTools}
-				{#each extraTools as tool}
-					<button
-						class="active-tool base-tool"
+					<input
+						bind:this={fileInputEl}
 						disabled={loading}
-						onclick={async (e) => {
-							e.preventDefault();
-							goto(`${base}/tools/${tool._id}`);
+						class="absolute hidden size-0"
+						aria-label="Upload file"
+						type="file"
+						multiple
+						onchange={onFileChange}
+						onclick={(e) => {
+							if (requireAuthUser()) {
+								e.preventDefault();
+							}
+						}}
+						accept={mimeTypes.join(",")}
+					/>
+
+					<DropdownMenu.Root
+						bind:open={isDropdownOpen}
+						onOpenChange={(open) => {
+							if (open && requireAuthUser()) {
+								isDropdownOpen = false;
+								return;
+							}
+							isDropdownOpen = open;
 						}}
 					>
-						{#key tool.icon + tool.color}
-							<ToolLogo icon={tool.icon} color={tool.color} size="xs" />
-						{/key}
-						{tool.displayName}
-					</button>
-				{/each}
-				<HoverTooltip
-					label="Browse more tools"
-					position="right"
-					TooltipClassNames="text-xs !text-left !w-auto whitespace-nowrap !py-1 max-sm:hidden"
-				>
-					<a
-						class="base-tool flex !size-[20px] items-center justify-center rounded-full border !border-gray-200 !bg-white !transition-none dark:!border-gray-500 dark:!bg-transparent"
-						href={`${base}/tools`}
-						title="Browse more tools"
-					>
-						<IconAdd class="text-sm" />
-					</a>
-				</HoverTooltip>
+						<DropdownMenu.Trigger
+							class="btn size-8 rounded-full border bg-white text-black shadow transition-none enabled:hover:bg-white enabled:hover:shadow-inner dark:border-transparent dark:bg-gray-600/50 dark:text-white dark:hover:enabled:bg-gray-600 sm:size-7"
+							disabled={loading}
+							aria-label="Add attachment"
+						>
+							<IconPlus class="text-base sm:text-sm" />
+						</DropdownMenu.Trigger>
+						<DropdownMenu.Portal>
+							<DropdownMenu.Content
+								class="z-50 rounded-xl border border-gray-200 bg-white/95 p-1 text-gray-800 shadow-lg backdrop-blur dark:border-gray-700/60 dark:bg-gray-800/95 dark:text-gray-100"
+								side="top"
+								sideOffset={8}
+								align="start"
+								trapFocus={false}
+								onCloseAutoFocus={(e) => e.preventDefault()}
+								interactOutsideBehavior="defer-otherwise-close"
+							>
+								{#if modelIsMultimodal}
+									<DropdownMenu.Item
+										class="flex h-9 select-none items-center gap-1 rounded-md px-2 text-sm text-gray-700 data-[highlighted]:bg-gray-100 focus-visible:outline-none dark:text-gray-200 dark:data-[highlighted]:bg-white/10 sm:h-8"
+										onSelect={() => openFilePickerImage()}
+									>
+										<CarbonImage class="size-4 opacity-90 dark:opacity-80" />
+										Add image(s)
+									</DropdownMenu.Item>
+								{/if}
+
+								<DropdownMenu.Sub>
+									<DropdownMenu.SubTrigger
+										class="flex h-9 select-none items-center gap-1 rounded-md px-2 text-sm text-gray-700 data-[highlighted]:bg-gray-100 data-[state=open]:bg-gray-100 focus-visible:outline-none dark:text-gray-200 dark:data-[highlighted]:bg-white/10 dark:data-[state=open]:bg-white/10 sm:h-8"
+									>
+										<div class="flex items-center gap-1">
+											<CarbonDocument class="size-4 opacity-90 dark:opacity-80" />
+											Add text file
+										</div>
+										<div class="ml-auto flex items-center">
+											<CarbonChevronRight class="size-4 opacity-70 dark:opacity-80" />
+										</div>
+									</DropdownMenu.SubTrigger>
+									<DropdownMenu.SubContent
+										class="z-50 rounded-xl border border-gray-200 bg-white/95 p-1 text-gray-800 shadow-lg backdrop-blur dark:border-gray-700/60 dark:bg-gray-800/95 dark:text-gray-100"
+										sideOffset={10}
+										trapFocus={false}
+										onCloseAutoFocus={(e) => e.preventDefault()}
+										interactOutsideBehavior="defer-otherwise-close"
+									>
+										<DropdownMenu.Item
+											class="flex h-9 select-none items-center gap-1 rounded-md px-2 text-sm text-gray-700 data-[highlighted]:bg-gray-100 focus-visible:outline-none dark:text-gray-200 dark:data-[highlighted]:bg-white/10 sm:h-8"
+											onSelect={() => openFilePickerText()}
+										>
+											<CarbonUpload class="size-4 opacity-90 dark:opacity-80" />
+											Upload from device
+										</DropdownMenu.Item>
+										<DropdownMenu.Item
+											class="flex h-9 select-none items-center gap-1 rounded-md px-2 text-sm text-gray-700 data-[highlighted]:bg-gray-100 focus-visible:outline-none dark:text-gray-200 dark:data-[highlighted]:bg-white/10 sm:h-8"
+											onSelect={() => (isUrlModalOpen = true)}
+										>
+											<CarbonLink class="size-4 opacity-90 dark:opacity-80" />
+											Fetch from URL
+										</DropdownMenu.Item>
+									</DropdownMenu.SubContent>
+								</DropdownMenu.Sub>
+
+								<!-- MCP Servers submenu -->
+								<DropdownMenu.Sub>
+									<DropdownMenu.SubTrigger
+										class="flex h-9 select-none items-center gap-1 rounded-md px-2 text-sm text-gray-700 data-[highlighted]:bg-gray-100 data-[state=open]:bg-gray-100 focus-visible:outline-none dark:text-gray-200 dark:data-[highlighted]:bg-white/10 dark:data-[state=open]:bg-white/10 sm:h-8"
+									>
+										<div class="flex items-center gap-1">
+											<IconMCP classNames="size-4 opacity-90 dark:opacity-80" />
+											MCP Servers
+										</div>
+										<div class="ml-auto flex items-center">
+											<CarbonChevronRight class="size-4 opacity-70 dark:opacity-80" />
+										</div>
+									</DropdownMenu.SubTrigger>
+									<DropdownMenu.SubContent
+										class="z-50 rounded-xl border border-gray-200 bg-white/95 p-1 text-gray-800 shadow-lg backdrop-blur dark:border-gray-700/60 dark:bg-gray-800/95 dark:text-gray-100"
+										sideOffset={10}
+										trapFocus={false}
+										onCloseAutoFocus={(e) => e.preventDefault()}
+										interactOutsideBehavior="defer-otherwise-close"
+									>
+										{#each $allMcpServers as server (server.id)}
+											<DropdownMenu.CheckboxItem
+												checked={$selectedServerIds.has(server.id)}
+												onCheckedChange={() => toggleServer(server.id)}
+												closeOnSelect={false}
+												class="flex h-9 select-none items-center gap-2 rounded-md px-2 text-sm leading-none text-gray-800 data-[highlighted]:bg-gray-100 focus-visible:outline-none dark:text-gray-100 dark:data-[highlighted]:bg-white/10"
+											>
+												{#snippet children({ checked })}
+													<img
+														src={getMcpServerFaviconUrl(server.url)}
+														alt=""
+														class="size-4 flex-shrink-0 rounded"
+													/>
+													<span class="max-w-52 truncate py-1">{server.name}</span>
+													<div class="ml-auto flex items-center">
+														<!-- Toggle visual -->
+														<span
+															class={[
+																"relative mt-px flex h-4 w-7 items-center self-center rounded-full transition-colors",
+																checked ? "bg-blue-600/80" : "bg-gray-300 dark:bg-gray-700",
+															]}
+														>
+															<span
+																class={[
+																	"block size-3 translate-x-0.5 rounded-full bg-white shadow transition-transform",
+																	checked ? "translate-x-[14px]" : "translate-x-0.5",
+																]}
+															></span>
+														</span>
+													</div>
+												{/snippet}
+											</DropdownMenu.CheckboxItem>
+										{/each}
+
+										{#if $allMcpServers.length > 0}
+											<DropdownMenu.Separator class="my-1 h-px bg-gray-200 dark:bg-gray-700/60" />
+										{/if}
+										<DropdownMenu.Item
+											class="flex h-9 select-none items-center gap-1 rounded-md px-2 text-sm text-gray-700 data-[highlighted]:bg-gray-100 focus-visible:outline-none dark:text-gray-200 dark:data-[highlighted]:bg-white/10 sm:h-8"
+											onSelect={() => (isMcpManagerOpen = true)}
+										>
+											Manage MCP Servers
+										</DropdownMenu.Item>
+									</DropdownMenu.SubContent>
+								</DropdownMenu.Sub>
+							</DropdownMenu.Content>
+						</DropdownMenu.Portal>
+					</DropdownMenu.Root>
+
+					{#if $enabledServersCount > 0}
+						<div
+							class="ml-1.5 inline-flex h-8 items-center gap-1.5 rounded-full border border-blue-500/10 bg-blue-600/10 pl-2 pr-1 text-xs font-semibold text-blue-700 dark:bg-blue-600/20 dark:text-blue-400 sm:h-7"
+							class:grayscale={!modelSupportsTools}
+							class:opacity-60={!modelSupportsTools}
+							class:cursor-help={!modelSupportsTools}
+							title={modelSupportsTools
+								? "MCP servers enabled"
+								: "Current model doesn’t support tools"}
+						>
+							<button
+								class="inline-flex cursor-pointer select-none items-center gap-1 bg-transparent p-0 leading-none text-current focus:outline-none"
+								type="button"
+								title="Manage MCP Servers"
+								onclick={() => (isMcpManagerOpen = true)}
+								class:line-through={!modelSupportsTools}
+							>
+								{#if selectedServers.length}
+									<span class="flex items-center -space-x-1">
+										{#each selectedServers.slice(0, 3) as server (server.id)}
+											<img
+												src={getMcpServerFaviconUrl(server.url)}
+												alt=""
+												class="size-4 rounded bg-white p-px shadow-sm ring-1 ring-black/5 dark:bg-gray-900 dark:ring-white/10"
+											/>
+										{/each}
+										{#if selectedServers.length > 3}
+											<span class="ml-1 text-[10px] font-semibold text-blue-800 dark:text-blue-200">
+												+{selectedServers.length - 3}
+											</span>
+										{/if}
+									</span>
+								{/if}
+								MCP ({$enabledServersCount})
+							</button>
+							<button
+								class="grid size-5 place-items-center rounded-full bg-blue-600/15 text-blue-700 transition-colors hover:bg-blue-600/25 dark:bg-blue-600/25 dark:text-blue-300 dark:hover:bg-blue-600/35"
+								aria-label="Disable all MCP servers"
+								onclick={() => disableAllServers()}
+								type="button"
+							>
+								<CarbonClose class="size-3.5" />
+							</button>
+						</div>
+					{/if}
+				</div>
 			{/if}
 		</div>
 	{/if}
 	{@render children?.()}
+
+	<UrlFetchModal
+		bind:open={isUrlModalOpen}
+		acceptMimeTypes={mimeTypes}
+		onfiles={handleFetchedFiles}
+	/>
+
+	{#if isMcpManagerOpen}
+		<MCPServerManager onclose={() => (isMcpManagerOpen = false)} />
+	{/if}
 </div>
 
 <style lang="postcss">

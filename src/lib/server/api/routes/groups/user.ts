@@ -5,9 +5,9 @@ import { collections } from "$lib/server/database";
 import { authCondition } from "$lib/server/auth";
 import { models, validateModel } from "$lib/server/models";
 import { DEFAULT_SETTINGS, type SettingsEditable } from "$lib/types/Settings";
-import { toolFromConfigs } from "$lib/server/tools";
-import { ObjectId } from "mongodb";
 import { z } from "zod";
+import { config } from "$lib/server/config";
+import { logger } from "$lib/server/logger";
 
 export const userGroup = new Elysia()
 	.use(authPlugin)
@@ -32,7 +32,6 @@ export const userGroup = new Elysia()
 							username: locals.user.username,
 							avatarUrl: locals.user.avatarUrl,
 							email: locals.user.email,
-							logoutDisabled: locals.user.logoutDisabled,
 							isAdmin: locals.user.isAdmin ?? false,
 							isEarlyAccess: locals.user.isEarlyAccess ?? false,
 						}
@@ -41,11 +40,7 @@ export const userGroup = new Elysia()
 			.get("/settings", async ({ locals }) => {
 				const settings = await collections.settings.findOne(authCondition(locals));
 
-				if (
-					settings &&
-					!validateModel(models).safeParse(settings?.activeModel).success &&
-					!settings.assistants?.map((el) => el.toString())?.includes(settings?.activeModel)
-				) {
+				if (settings && !validateModel(models).safeParse(settings?.activeModel).success) {
 					settings.activeModel = defaultModel.id;
 					await collections.settings.updateOne(authCondition(locals), {
 						$set: { activeModel: defaultModel.id },
@@ -65,67 +60,49 @@ export const userGroup = new Elysia()
 
 				// todo: get user settings
 				return {
-					ethicsModalAccepted: !!settings?.ethicsModalAcceptedAt,
-					ethicsModalAcceptedAt: settings?.ethicsModalAcceptedAt ?? null,
+					welcomeModalSeen: !!settings?.welcomeModalSeenAt,
+					welcomeModalSeenAt: settings?.welcomeModalSeenAt ?? null,
 
 					activeModel: settings?.activeModel ?? DEFAULT_SETTINGS.activeModel,
-					hideEmojiOnSidebar: settings?.hideEmojiOnSidebar ?? DEFAULT_SETTINGS.hideEmojiOnSidebar,
 					disableStream: settings?.disableStream ?? DEFAULT_SETTINGS.disableStream,
 					directPaste: settings?.directPaste ?? DEFAULT_SETTINGS.directPaste,
+					hidePromptExamples: settings?.hidePromptExamples ?? DEFAULT_SETTINGS.hidePromptExamples,
 					shareConversationsWithModelAuthors:
 						settings?.shareConversationsWithModelAuthors ??
 						DEFAULT_SETTINGS.shareConversationsWithModelAuthors,
 
 					customPrompts: settings?.customPrompts ?? {},
-					assistants: settings?.assistants?.map((assistantId) => assistantId.toString()) ?? [],
-					tools:
-						settings?.tools ??
-						toolFromConfigs
-							.filter((el) => !el.isHidden && el.isOnByDefault)
-							.map((el) => el._id.toString()),
+					multimodalOverrides: settings?.multimodalOverrides ?? {},
+					toolsOverrides: settings?.toolsOverrides ?? {},
+					billingOrganization: settings?.billingOrganization ?? undefined,
 				};
 			})
 			.post("/settings", async ({ locals, request }) => {
 				const body = await request.json();
 
-				const { ethicsModalAccepted, ...settings } = z
+				const { welcomeModalSeen, ...settings } = z
 					.object({
 						shareConversationsWithModelAuthors: z
 							.boolean()
 							.default(DEFAULT_SETTINGS.shareConversationsWithModelAuthors),
-						hideEmojiOnSidebar: z.boolean().default(DEFAULT_SETTINGS.hideEmojiOnSidebar),
-						ethicsModalAccepted: z.boolean().optional(),
+						welcomeModalSeen: z.boolean().optional(),
 						activeModel: z.string().default(DEFAULT_SETTINGS.activeModel),
 						customPrompts: z.record(z.string()).default({}),
-						tools: z.array(z.string()).optional(),
+						multimodalOverrides: z.record(z.boolean()).default({}),
+						toolsOverrides: z.record(z.boolean()).default({}),
 						disableStream: z.boolean().default(false),
 						directPaste: z.boolean().default(false),
+						hidePromptExamples: z.record(z.boolean()).default({}),
+						billingOrganization: z.string().optional(),
 					})
 					.parse(body) satisfies SettingsEditable;
-
-				// make sure all tools exist
-				// either in db or in config
-				if (settings.tools) {
-					const newTools = [
-						...(await collections.tools
-							.find({ _id: { $in: settings.tools.map((toolId) => new ObjectId(toolId)) } })
-							.project({ _id: 1 })
-							.toArray()
-							.then((tools) => tools.map((tool) => tool._id.toString()))),
-						...toolFromConfigs
-							.filter((el) => (settings?.tools ?? []).includes(el._id.toString()))
-							.map((el) => el._id.toString()),
-					];
-
-					settings.tools = newTools;
-				}
 
 				await collections.settings.updateOne(
 					authCondition(locals),
 					{
 						$set: {
 							...settings,
-							...(ethicsModalAccepted && { ethicsModalAcceptedAt: new Date() }),
+							...(welcomeModalSeen && { welcomeModalSeenAt: new Date() }),
 							updatedAt: new Date(),
 						},
 						$setOnInsert: {
@@ -151,45 +128,78 @@ export const userGroup = new Elysia()
 					.toArray();
 				return reports;
 			})
-			.get("/assistant/active", async ({ locals }) => {
-				const settings = await collections.settings.findOne(authCondition(locals));
-
-				if (!settings) {
-					return null;
+			.get("/billing-orgs", async ({ locals, set }) => {
+				// Only available for HuggingChat
+				if (!config.isHuggingChat) {
+					set.status = 404;
+					return { error: "Not available" };
 				}
 
-				if (settings.assistants?.map((el) => el.toString())?.includes(settings?.activeModel)) {
-					return await collections.assistants.findOne({
-						_id: new ObjectId(settings.activeModel),
+				// Requires authenticated user with OAuth token
+				if (!locals.user) {
+					set.status = 401;
+					return { error: "Login required" };
+				}
+
+				if (!locals.token) {
+					set.status = 401;
+					return { error: "OAuth token not available. Please log out and log back in." };
+				}
+
+				try {
+					// Fetch billing info from HuggingFace OAuth userinfo
+					const response = await fetch("https://huggingface.co/oauth/userinfo", {
+						headers: { Authorization: `Bearer ${locals.token}` },
 					});
+
+					if (!response.ok) {
+						logger.error(`Failed to fetch billing orgs: ${response.status}`);
+						set.status = 502;
+						return { error: "Failed to fetch billing information" };
+					}
+
+					const data = await response.json();
+
+					// Get user's current billingOrganization setting
+					const settings = await collections.settings.findOne(authCondition(locals));
+					const currentBillingOrg = settings?.billingOrganization;
+
+					// Filter orgs to only those with canPay: true
+					const billingOrgs = (data.orgs ?? [])
+						.filter((org: { canPay?: boolean }) => org.canPay === true)
+						.map((org: { sub: string; name: string; preferred_username: string }) => ({
+							sub: org.sub,
+							name: org.name,
+							preferred_username: org.preferred_username,
+						}));
+
+					// Check if current billing org is still valid
+					const isCurrentOrgValid =
+						!currentBillingOrg ||
+						billingOrgs.some(
+							(org: { preferred_username: string }) => org.preferred_username === currentBillingOrg
+						);
+
+					// If current billing org is no longer valid, clear it
+					if (!isCurrentOrgValid && currentBillingOrg) {
+						logger.info(
+							`Clearing invalid billingOrganization '${currentBillingOrg}' for user ${locals.user._id}`
+						);
+						await collections.settings.updateOne(authCondition(locals), {
+							$unset: { billingOrganization: "" },
+							$set: { updatedAt: new Date() },
+						});
+					}
+
+					return {
+						userCanPay: data.canPay ?? false,
+						organizations: billingOrgs,
+						currentBillingOrg: isCurrentOrgValid ? currentBillingOrg : undefined,
+					};
+				} catch (err) {
+					logger.error(err, "Error fetching billing orgs:");
+					set.status = 500;
+					return { error: "Internal server error" };
 				}
-
-				return null;
-			})
-			.get("/assistants", async ({ locals }) => {
-				const settings = await collections.settings.findOne(authCondition(locals));
-
-				if (!settings) {
-					return [];
-				}
-
-				const userAssistants =
-					settings?.assistants?.map((assistantId) => assistantId.toString()) ?? [];
-
-				const assistants = await collections.assistants
-					.find({
-						_id: {
-							$in: [...userAssistants.map((el) => new ObjectId(el))],
-						},
-					})
-					.toArray();
-
-				return assistants.map((el) => ({
-					...el,
-					_id: el._id.toString(),
-					createdById: undefined,
-					createdByMe:
-						el.createdById.toString() === (locals.user?._id ?? locals.sessionId).toString(),
-				}));
 			});
 	});

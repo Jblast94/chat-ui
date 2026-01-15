@@ -2,13 +2,21 @@
 
 <Tip warning={true}>
 
-**We highly discourage using the chart**. The Helm chart is a work in progress and should be considered unstable. Breaking changes to the chart may be pushed without migration guides or notice. Contributions welcome!
+The Helm chart is a work in progress and should be considered unstable. Breaking changes may be pushed without migration guides. Contributions welcome!
 
 </Tip>
 
-For installation on Kubernetes, you may use the helm chart in `/chart`. Please note that no chart repository has been setup, so you'll need to clone the repository and install the chart by path. The production values may be found at `chart/env/prod.yaml`.
+For Kubernetes deployment, use the Helm chart in `/chart`. No chart repository is published, so clone the repository and install by path.
 
-**Example values.yaml**
+## Installation
+
+```bash
+git clone https://github.com/huggingface/chat-ui
+cd chat-ui
+helm install chat-ui ./chart -f values.yaml
+```
+
+## Example values.yaml
 
 ```yaml
 replicas: 1
@@ -23,13 +31,13 @@ resources:
     cpu: 100m
     memory: 2Gi
   limits:
-    # Recommended to use large limits when web search is enabled
     cpu: "4"
     memory: 6Gi
 
 envVars:
+  OPENAI_BASE_URL: https://router.huggingface.co/v1
+  OPENAI_API_KEY: hf_***
   MONGODB_URL: mongodb://chat-ui-mongo:27017
-  # Ensure that your values.yaml will not leak anywhere
-  # PRs welcome for a chart rework with envFrom support!
-  HF_TOKEN: secret_token
 ```
+
+See the [configuration overview](../configuration/overview) for all available environment variables.

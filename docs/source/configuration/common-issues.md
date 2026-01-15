@@ -1,7 +1,38 @@
 # Common Issues
 
-## 403：You don't have access to this conversation
+## 403: You don't have access to this conversation
 
-Most likely you are running chat-ui over HTTP. The recommended option is to setup something like NGINX to handle HTTPS and proxy the requests to chat-ui. If you really need to run over HTTP you can add `ALLOW_INSECURE_COOKIES=true` to your `.env.local`.
+This usually happens when running Chat UI over HTTP without proper cookie configuration.
 
-Make sure to set your `PUBLIC_ORIGIN` in your `.env.local` to the correct URL as well.
+**Recommended:** Set up a reverse proxy (NGINX, Caddy) to handle HTTPS.
+
+**Alternative:** If you must run over HTTP, configure cookies:
+
+```ini
+COOKIE_SECURE=false
+COOKIE_SAMESITE=lax
+```
+
+Also ensure `PUBLIC_ORIGIN` matches your actual URL:
+
+```ini
+PUBLIC_ORIGIN=http://localhost:5173
+```
+
+## Models not loading
+
+If models aren't appearing in the UI:
+
+1. Verify `OPENAI_BASE_URL` is correct and accessible
+2. Check that `OPENAI_API_KEY` is valid
+3. Ensure the endpoint returns models at `${OPENAI_BASE_URL}/models`
+
+## Database connection errors
+
+For development, you can skip MongoDB entirely - Chat UI will use an embedded database.
+
+For production, verify:
+
+- `MONGODB_URL` is a valid connection string
+- Your IP is whitelisted (for MongoDB Atlas)
+- The database user has read/write permissions

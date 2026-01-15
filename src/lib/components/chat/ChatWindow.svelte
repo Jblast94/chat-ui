@@ -1,44 +1,52 @@
 <script lang="ts">
-	import { createBubbler } from "svelte/legacy";
-
-	const bubble = createBubbler();
 	import type { Message, MessageFile } from "$lib/types/Message";
-	import { createEventDispatcher, onDestroy, tick } from "svelte";
+	import { onDestroy } from "svelte";
 
-	import CarbonExport from "~icons/carbon/export";
-	import CarbonCheckmark from "~icons/carbon/checkmark";
+	import IconOmni from "$lib/components/icons/IconOmni.svelte";
 	import CarbonCaretDown from "~icons/carbon/caret-down";
-
-	import EosIconsLoading from "~icons/eos-icons/loading";
+	import CarbonDirectionRight from "~icons/carbon/direction-right-01";
+	import IconArrowUp from "~icons/lucide/arrow-up";
+	import IconMic from "~icons/lucide/mic";
 
 	import ChatInput from "./ChatInput.svelte";
+	import VoiceRecorder from "./VoiceRecorder.svelte";
 	import StopGeneratingBtn from "../StopGeneratingBtn.svelte";
 	import type { Model } from "$lib/types/Model";
-	import { page } from "$app/state";
 	import FileDropzone from "./FileDropzone.svelte";
 	import RetryBtn from "../RetryBtn.svelte";
 	import file2base64 from "$lib/utils/file2base64";
-	import type { Assistant } from "$lib/types/Assistant";
 	import { base } from "$app/paths";
-	import ContinueBtn from "../ContinueBtn.svelte";
-	import AssistantIntroduction from "./AssistantIntroduction.svelte";
 	import ChatMessage from "./ChatMessage.svelte";
 	import ScrollToBottomBtn from "../ScrollToBottomBtn.svelte";
 	import ScrollToPreviousBtn from "../ScrollToPreviousBtn.svelte";
 	import { browser } from "$app/environment";
 	import { snapScrollToBottom } from "$lib/actions/snapScrollToBottom";
 	import SystemPromptModal from "../SystemPromptModal.svelte";
+	import ShareConversationModal from "../ShareConversationModal.svelte";
 	import ChatIntroduction from "./ChatIntroduction.svelte";
 	import UploadedFile from "./UploadedFile.svelte";
 	import { useSettingsStore } from "$lib/stores/settings";
+	import { error } from "$lib/stores/errors";
 	import ModelSwitch from "./ModelSwitch.svelte";
+	import { routerExamples } from "$lib/constants/routerExamples";
+	import { mcpExamples } from "$lib/constants/mcpExamples";
+	import type { RouterFollowUp, RouterExample } from "$lib/constants/routerExamples";
+	import { allBaseServersEnabled, mcpServersLoaded } from "$lib/stores/mcpServers";
+	import { shareModal } from "$lib/stores/shareModal";
+	import LucideHammer from "~icons/lucide/hammer";
 
 	import { fly } from "svelte/transition";
 	import { cubicInOut } from "svelte/easing";
-	import type { ToolFront } from "$lib/types/Tool";
-	import { loginModalOpen } from "$lib/stores/loginModal";
-	import { beforeNavigate } from "$app/navigation";
+
 	import { isVirtualKeyboard } from "$lib/utils/isVirtualKeyboard";
+	import { requireAuthUser } from "$lib/utils/auth";
+	import { page } from "$app/state";
+	import {
+		isMessageToolCallUpdate,
+		isMessageToolErrorUpdate,
+		isMessageToolResultUpdate,
+	} from "$lib/utils/messageUpdates";
+	import type { ToolFront } from "$lib/types/Tool";
 
 	interface Props {
 		messages?: Message[];
@@ -48,9 +56,13 @@
 		shared?: boolean;
 		currentModel: Model;
 		models: Model[];
-		assistant?: Assistant | undefined;
 		preprompt?: string | undefined;
 		files?: File[];
+		onmessage?: (content: string) => void;
+		onstop?: () => void;
+		onretry?: (payload: { id: Message["id"]; content?: string }) => void;
+		onshowAlternateMsg?: (payload: { id: Message["id"] }) => void;
+		draft?: string;
 	}
 
 	let {
@@ -61,37 +73,33 @@
 		shared = false,
 		currentModel,
 		models,
-		assistant = undefined,
 		preprompt = undefined,
 		files = $bindable([]),
+		draft = $bindable(""),
+		onmessage,
+		onstop,
+		onretry,
+		onshowAlternateMsg,
 	}: Props = $props();
 
 	let isReadOnly = $derived(!models.some((model) => model.id === currentModel.id));
 
-	let message: string = $state("");
-	let timeout: ReturnType<typeof setTimeout>;
-	let isSharedRecently = $state(false);
+	let shareModalOpen = $state(false);
 	let editMsdgId: Message["id"] | null = $state(null);
 	let pastedLongContent = $state(false);
 
-	beforeNavigate(() => {
-		if (page.params.id) {
-			isSharedRecently = false;
-		}
-	});
-
-	const dispatch = createEventDispatcher<{
-		message: string;
-		share: void;
-		stop: void;
-		retry: { id: Message["id"]; content?: string };
-		continue: { id: Message["id"] };
-	}>();
+	// Voice recording state
+	let isRecording = $state(false);
+	let isTranscribing = $state(false);
+	let transcriptionEnabled = $derived(
+		!!(page.data as { transcriptionEnabled?: boolean }).transcriptionEnabled
+	);
+	let isTouchDevice = $derived(browser && navigator.maxTouchPoints > 0);
 
 	const handleSubmit = () => {
-		if (loading) return;
-		dispatch("message", message);
-		message = "";
+		if (requireAuthUser() || loading || !draft) return;
+		onmessage?.(draft);
+		draft = "";
 	};
 
 	let lastTarget: EventTarget | null = null;
@@ -149,12 +157,83 @@
 	};
 
 	let lastMessage = $derived(browser && (messages.at(-1) as Message));
-	let lastIsError = $derived(
-		lastMessage &&
-			!loading &&
-			(lastMessage.from === "user" ||
-				lastMessage.updates?.findIndex((u) => u.type === "status" && u.status === "error") !== -1)
+	// Scroll signal includes tool updates and thinking blocks to trigger scroll on all content changes
+	let scrollSignal = $derived.by(() => {
+		const last = messages.at(-1) as Message | undefined;
+		if (!last) return `${messages.length}:0`;
+
+		// Count tool updates to trigger scroll when new tools are called or complete
+		const toolUpdateCount = last.updates?.length ?? 0;
+
+		// Include content length, tool count, and message count in signal
+		return `${last.id}:${last.content.length}:${messages.length}:${toolUpdateCount}`;
+	});
+	let streamingAssistantMessage = $derived(
+		(() => {
+			for (let i = messages.length - 1; i >= 0; i -= 1) {
+				const candidate = messages[i];
+				if (candidate.from === "assistant") {
+					return candidate;
+				}
+			}
+			return undefined;
+		})()
 	);
+	let streamingRouterMetadata = $derived(streamingAssistantMessage?.routerMetadata ?? null);
+	let streamingRouterModelName = $derived(
+		streamingRouterMetadata?.model
+			? (streamingRouterMetadata.model.split("/").pop() ?? streamingRouterMetadata.model)
+			: ""
+	);
+
+	let lastIsError = $derived(
+		!loading &&
+			(streamingAssistantMessage?.updates?.findIndex(
+				(u) => u.type === "status" && u.status === "error"
+			) ?? -1) !== -1
+	);
+
+	// Expose currently running tool call name (if any) from the streaming assistant message
+	const availableTools: ToolFront[] = $derived.by(
+		() => (page.data as { tools?: ToolFront[] } | undefined)?.tools ?? []
+	);
+	let streamingToolCallName = $derived.by(() => {
+		const updates = streamingAssistantMessage?.updates ?? [];
+		if (!updates.length) return null;
+		const done = new Set<string>();
+		for (const u of updates) {
+			if (isMessageToolResultUpdate(u) || isMessageToolErrorUpdate(u)) done.add(u.uuid);
+		}
+		for (let i = updates.length - 1; i >= 0; i -= 1) {
+			const u = updates[i];
+			if (isMessageToolCallUpdate(u) && !done.has(u.uuid)) {
+				return u.call.name;
+			}
+		}
+		return null;
+	});
+	let showRouterDetails = $state(false);
+	let routerDetailsTimeout: ReturnType<typeof setTimeout> | undefined;
+
+	$effect(() => {
+		if (!currentModel.isRouter || !loading) {
+			showRouterDetails = false;
+			if (routerDetailsTimeout) {
+				clearTimeout(routerDetailsTimeout);
+				routerDetailsTimeout = undefined;
+			}
+			return;
+		}
+
+		if (routerDetailsTimeout) {
+			clearTimeout(routerDetailsTimeout);
+		}
+
+		showRouterDetails = false;
+		routerDetailsTimeout = setTimeout(() => {
+			showRouterDetails = true;
+		}, 500);
+	});
 
 	let sources = $derived(
 		files?.map<Promise<MessageFile>>((file) =>
@@ -167,71 +246,210 @@
 		)
 	);
 
-	function onShare() {
-		if (!confirm("Are you sure you want to share this conversation? This cannot be undone.")) {
-			return;
-		}
-
-		dispatch("share");
-		isSharedRecently = true;
-		if (timeout) {
-			clearTimeout(timeout);
-		}
-		timeout = setTimeout(() => {
-			isSharedRecently = false;
-		}, 2000);
-	}
+	const unsubscribeShareModal = shareModal.subscribe((value) => {
+		shareModalOpen = value;
+	});
 
 	onDestroy(() => {
-		if (timeout) {
-			clearTimeout(timeout);
+		unsubscribeShareModal();
+		shareModal.close();
+		if (routerDetailsTimeout) {
+			clearTimeout(routerDetailsTimeout);
 		}
 	});
 
 	let chatContainer: HTMLElement | undefined = $state();
 
-	async function scrollToBottom() {
-		await tick();
-		if (!chatContainer) return;
-		chatContainer.scrollTop = chatContainer.scrollHeight;
-	}
-
-	// If last message is from user, scroll to bottom
+	// Force scroll to bottom when user sends a new message
+	// Pattern: user message + empty assistant message are added together
+	let prevMessageCount = $state(messages.length);
+	let forceReattach = $state(0);
 	$effect(() => {
-		if (lastMessage && lastMessage.from === "user") {
-			scrollToBottom();
+		if (messages.length > prevMessageCount) {
+			const last = messages.at(-1);
+			const secondLast = messages.at(-2);
+			const userJustSentMessage =
+				messages.length === prevMessageCount + 2 &&
+				secondLast?.from === "user" &&
+				last?.from === "assistant" &&
+				last?.content === "";
+
+			if (userJustSentMessage) {
+				forceReattach++;
+			}
 		}
+		prevMessageCount = messages.length;
 	});
 
-	const settings = useSettingsStore();
+	// Combined scroll dependency for the action
+	let scrollDependency = $derived({ signal: scrollSignal, forceReattach });
 
-	let mimeTypesFromActiveTools = $derived(
-		page.data.tools
-			.filter((tool: ToolFront) => {
-				if (assistant) {
-					return assistant.tools?.includes(tool._id);
-				}
-				if (currentModel.tools) {
-					return $settings?.tools?.includes(tool._id) ?? tool.isOnByDefault;
-				}
-				return false;
-			})
-			.flatMap((tool: ToolFront) => tool.mimeTypes ?? [])
+	const settings = useSettingsStore();
+	let hideRouterExamples = $derived($settings.hidePromptExamples?.[currentModel.id] ?? false);
+
+	// Respect per‑model multimodal toggle from settings (force enable)
+	let modelIsMultimodalOverride = $derived($settings.multimodalOverrides?.[currentModel.id]);
+	let modelIsMultimodal = $derived((modelIsMultimodalOverride ?? currentModel.multimodal) === true);
+
+	// Determine tool support for the current model (server-provided capability with user override)
+	let modelSupportsTools = $derived(
+		($settings.toolsOverrides?.[currentModel.id] ??
+			(currentModel as unknown as { supportsTools?: boolean }).supportsTools) === true
 	);
+
+	// Always allow common text-like files; add images only when model is multimodal
+	import { TEXT_MIME_ALLOWLIST, IMAGE_MIME_ALLOWLIST_DEFAULT } from "$lib/constants/mime";
 
 	let activeMimeTypes = $derived(
 		Array.from(
 			new Set([
-				...mimeTypesFromActiveTools, // fetch mime types from active tools either from tool settings or active assistant
-				...(currentModel.tools && !assistant ? ["application/pdf"] : []), // if its a tool model, we can always enable document parser so we always accept pdfs
-				...(currentModel.multimodal
-					? (currentModel.multimodalAcceptedMimetypes ?? ["image/*"])
-					: []), // if its a multimodal model, we always accept images
+				...TEXT_MIME_ALLOWLIST,
+				...(modelIsMultimodal
+					? (currentModel.multimodalAcceptedMimetypes ?? [...IMAGE_MIME_ALLOWLIST_DEFAULT])
+					: []),
 			])
 		)
 	);
 	let isFileUploadEnabled = $derived(activeMimeTypes.length > 0);
 	let focused = $state(false);
+
+	let activeRouterExamplePrompt = $state<string | null>(null);
+	// Use MCP examples when all base servers are enabled, otherwise use router examples
+	let activeExamples = $derived<RouterExample[]>(
+		$allBaseServersEnabled ? mcpExamples : routerExamples
+	);
+	let routerFollowUps = $derived<RouterFollowUp[]>(
+		activeRouterExamplePrompt
+			? (activeExamples.find((ex) => ex.prompt === activeRouterExamplePrompt)?.followUps ?? [])
+			: []
+	);
+	let routerUserMessages = $derived(messages.filter((msg) => msg.from === "user"));
+	let shouldShowRouterFollowUps = $derived(
+		!draft.length &&
+			activeRouterExamplePrompt &&
+			routerFollowUps.length > 0 &&
+			routerUserMessages.length === 1 &&
+			currentModel.isRouter &&
+			!hideRouterExamples &&
+			!loading
+	);
+
+	$effect(() => {
+		if (!currentModel.isRouter || !messages.length) {
+			activeRouterExamplePrompt = null;
+			return;
+		}
+
+		const firstUserMessage = messages.find((msg) => msg.from === "user");
+		if (!firstUserMessage) {
+			activeRouterExamplePrompt = null;
+			return;
+		}
+
+		const match = activeExamples.find((ex) => ex.prompt.trim() === firstUserMessage.content.trim());
+		activeRouterExamplePrompt = match ? match.prompt : null;
+	});
+
+	function triggerPrompt(prompt: string) {
+		if (requireAuthUser() || loading) return;
+		draft = prompt;
+		handleSubmit();
+	}
+
+	async function startExample(example: RouterExample) {
+		if (requireAuthUser()) return;
+		activeRouterExamplePrompt = example.prompt;
+
+		if (browser && example.attachments?.length) {
+			const loadedFiles: File[] = [];
+			for (const attachment of example.attachments) {
+				try {
+					const response = await fetch(`${base}/${attachment.src}`);
+					if (!response.ok) continue;
+
+					const blob = await response.blob();
+					const name = attachment.src.split("/").pop() ?? "attachment";
+					loadedFiles.push(
+						new File([blob], name, { type: blob.type || "application/octet-stream" })
+					);
+				} catch (err) {
+					console.error("Error loading attachment:", err);
+				}
+			}
+			files = loadedFiles;
+		}
+
+		triggerPrompt(example.prompt);
+	}
+
+	function startFollowUp(followUp: RouterFollowUp) {
+		triggerPrompt(followUp.prompt);
+	}
+
+	async function handleRecordingConfirm(audioBlob: Blob) {
+		isRecording = false;
+		isTranscribing = true;
+
+		try {
+			const response = await fetch(`${base}/api/transcribe`, {
+				method: "POST",
+				headers: { "Content-Type": audioBlob.type },
+				body: audioBlob,
+			});
+
+			if (!response.ok) {
+				throw new Error(await response.text());
+			}
+
+			const { text } = await response.json();
+			const trimmedText = text?.trim();
+			if (trimmedText) {
+				// Append transcribed text to draft
+				draft = draft.trim() ? `${draft.trim()} ${trimmedText}` : trimmedText;
+			}
+		} catch (err) {
+			console.error("Transcription error:", err);
+			$error = "Transcription failed. Please try again.";
+		} finally {
+			isTranscribing = false;
+		}
+	}
+
+	async function handleRecordingSend(audioBlob: Blob) {
+		isRecording = false;
+		isTranscribing = true;
+
+		try {
+			const response = await fetch(`${base}/api/transcribe`, {
+				method: "POST",
+				headers: { "Content-Type": audioBlob.type },
+				body: audioBlob,
+			});
+
+			if (!response.ok) {
+				throw new Error(await response.text());
+			}
+
+			const { text } = await response.json();
+			const trimmedText = text?.trim();
+			if (trimmedText) {
+				// Set draft and send immediately
+				draft = draft.trim() ? `${draft.trim()} ${trimmedText}` : trimmedText;
+				handleSubmit();
+			}
+		} catch (err) {
+			console.error("Transcription error:", err);
+			$error = "Transcription failed. Please try again.";
+		} finally {
+			isTranscribing = false;
+		}
+	}
+
+	function handleRecordingError(message: string) {
+		console.error("Recording error:", message);
+		isRecording = false;
+		$error = message;
+	}
 </script>
 
 <svelte:window
@@ -239,7 +457,6 @@
 	ondragleave={onDragLeave}
 	ondragover={(e) => {
 		e.preventDefault();
-		bubble("dragover");
 	}}
 	ondrop={(e) => {
 		e.preventDefault();
@@ -248,36 +465,18 @@
 />
 
 <div class="relative z-[-1] min-h-0 min-w-0">
+	{#if shareModalOpen}
+		<ShareConversationModal open={shareModalOpen} onclose={() => shareModal.close()} />
+	{/if}
 	<div
 		class="scrollbar-custom h-full overflow-y-auto"
-		use:snapScrollToBottom={messages.map((message) => message.content)}
+		use:snapScrollToBottom={scrollDependency}
 		bind:this={chatContainer}
 	>
 		<div
 			class="mx-auto flex h-full max-w-3xl flex-col gap-6 px-5 pt-6 sm:gap-8 xl:max-w-4xl xl:pt-10"
 		>
-			{#if assistant && !!messages.length}
-				<a
-					class="mx-auto flex items-center gap-1.5 rounded-full border border-gray-100 bg-gray-50 py-1 pl-1 pr-3 text-sm text-gray-800 hover:bg-gray-100 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
-					href="{base}/assistant/{assistant._id}"
-				>
-					{#if assistant.avatar}
-						<img
-							src="{base}/settings/assistants/{assistant._id.toString()}/avatar.jpg?hash=${assistant.avatar}"
-							alt="Avatar"
-							class="size-5 rounded-full object-cover"
-						/>
-					{:else}
-						<div
-							class="flex size-6 items-center justify-center rounded-full bg-gray-300 font-bold uppercase text-gray-500"
-						>
-							{assistant.name[0]}
-						</div>
-					{/if}
-
-					{assistant.name}
-				</a>
-			{:else if preprompt && preprompt != currentModel.preprompt}
+			{#if preprompt && preprompt != currentModel.preprompt}
 				<SystemPromptModal preprompt={preprompt ?? ""} />
 			{/if}
 
@@ -292,10 +491,8 @@
 							readOnly={isReadOnly}
 							isLast={idx === messages.length - 1}
 							bind:editMsdgId
-							on:retry
-							on:vote
-							on:continue
-							on:showAlternateMsg
+							onretry={(payload) => onretry?.(payload)}
+							onshowAlternateMsg={(payload) => onshowAlternateMsg?.(payload)}
 						/>
 					{/each}
 					{#if isReadOnly}
@@ -314,44 +511,21 @@
 					isAuthor={!shared}
 					readOnly={isReadOnly}
 				/>
-			{:else if !assistant}
+			{:else}
 				<ChatIntroduction
 					{currentModel}
-					on:message={(ev) => {
-						if (page.data.loginRequired) {
-							ev.preventDefault();
-							$loginModalOpen = true;
-						} else {
-							dispatch("message", ev.detail);
-						}
-					}}
-				/>
-			{:else}
-				<AssistantIntroduction
-					{models}
-					{assistant}
-					on:message={(ev) => {
-						if (page.data.loginRequired) {
-							ev.preventDefault();
-							$loginModalOpen = true;
-						} else {
-							dispatch("message", ev.detail);
-						}
+					onmessage={(content) => {
+						onmessage?.(content);
 					}}
 				/>
 			{/if}
 		</div>
 
-		<ScrollToPreviousBtn
-			class="fixed right-4 max-md:bottom-[calc(50%+26px)] md:bottom-48 lg:right-10"
-			scrollNode={chatContainer}
-		/>
+		<ScrollToPreviousBtn class="fixed bottom-48 right-4 lg:right-10" scrollNode={chatContainer} />
 
-		<ScrollToBottomBtn
-			class="fixed right-4 max-md:bottom-[calc(50%-26px)] md:bottom-36 lg:right-10"
-			scrollNode={chatContainer}
-		/>
+		<ScrollToBottomBtn class="fixed bottom-36 right-4 lg:right-10" scrollNode={chatContainer} />
 	</div>
+
 	<div
 		class="pointer-events-none absolute inset-x-0 bottom-0 z-0 mx-auto flex w-full
 			max-w-3xl flex-col items-center justify-center bg-gradient-to-t from-white
@@ -359,6 +533,34 @@
 			dark:from-gray-900 dark:via-gray-900/100
 			dark:to-gray-900/0 max-sm:py-0 sm:px-5 md:pb-4 xl:max-w-4xl [&>*]:pointer-events-auto"
 	>
+		{#if !draft.length && !messages.length && !sources.length && !loading && currentModel.isRouter && activeExamples.length && !hideRouterExamples && !lastIsError && $mcpServersLoaded}
+			<div
+				class="no-scrollbar mb-3 flex w-full select-none justify-start gap-2 overflow-x-auto whitespace-nowrap text-gray-400 dark:text-gray-500"
+			>
+				{#each activeExamples as ex}
+					<button
+						class="flex items-center rounded-lg bg-gray-100/90 px-2 py-0.5 text-center text-sm backdrop-blur hover:text-gray-500 dark:bg-gray-700/50 dark:hover:text-gray-400"
+						onclick={() => startExample(ex)}>{ex.title}</button
+					>
+				{/each}
+			</div>
+		{/if}
+		{#if shouldShowRouterFollowUps && !lastIsError}
+			<div
+				class="no-scrollbar mb-3 flex w-full select-none justify-start gap-2 overflow-x-auto whitespace-nowrap text-gray-400 dark:text-gray-500"
+			>
+				<!-- <span class=" text-gray-500 dark:text-gray-400">Follow ups</span> -->
+				{#each routerFollowUps as followUp}
+					<button
+						class="flex items-center gap-1 rounded-lg bg-gray-100/90 px-2 py-0.5 text-center text-sm backdrop-blur hover:text-gray-500 dark:bg-gray-700/50 dark:hover:text-gray-400"
+						onclick={() => startFollowUp(followUp)}
+					>
+						<CarbonDirectionRight class="scale-y-[-1] text-xs" />
+						{followUp.title}</button
+					>
+				{/each}
+			</div>
+		{/if}
 		{#if sources?.length && !loading}
 			<div
 				in:fly|local={sources.length === 1 ? { y: -20, easing: cubicInOut } : undefined}
@@ -368,7 +570,7 @@
 					{#await source then src}
 						<UploadedFile
 							file={src}
-							on:close={() => {
+							onclose={() => {
 								files = files.filter((_, i) => i !== index);
 							}}
 						/>
@@ -379,31 +581,17 @@
 
 		<div class="w-full">
 			<div class="flex w-full *:mb-3">
-				{#if loading}
-					<StopGeneratingBtn classNames="ml-auto" onClick={() => dispatch("stop")} />
-				{:else if lastIsError}
+				{#if !loading && lastIsError}
 					<RetryBtn
 						classNames="ml-auto"
 						onClick={() => {
 							if (lastMessage && lastMessage.ancestors) {
-								dispatch("retry", {
+								onretry?.({
 									id: lastMessage.id,
 								});
 							}
 						}}
 					/>
-				{:else if messages && lastMessage && lastMessage.interrupted && !isReadOnly}
-					<div class="ml-auto gap-2">
-						<ContinueBtn
-							onClick={() => {
-								if (lastMessage && lastMessage.ancestors) {
-									dispatch("continue", {
-										id: lastMessage?.id,
-									});
-								}
-							}}
-						/>
-					</div>
 				{/if}
 			</div>
 			<form
@@ -414,12 +602,23 @@
 					handleSubmit();
 				}}
 				class={{
-					"relative flex w-full max-w-4xl flex-1 items-center rounded-xl border bg-gray-100 dark:border-gray-600 dark:bg-gray-700": true,
+					"relative flex w-full max-w-4xl flex-1 items-center rounded-xl border bg-gray-100 dark:border-gray-700 dark:bg-gray-800": true,
 					"opacity-30": isReadOnly,
 					"max-sm:mb-4": focused && isVirtualKeyboard(),
 				}}
 			>
-				{#if onDrag && isFileUploadEnabled}
+				{#if isRecording || isTranscribing}
+					<VoiceRecorder
+						{isTranscribing}
+						{isTouchDevice}
+						oncancel={() => {
+							isRecording = false;
+						}}
+						onconfirm={handleRecordingConfirm}
+						onsend={handleRecordingSend}
+						onerror={handleRecordingError}
+					/>
+				{:else if onDrag && isFileUploadEnabled}
 					<FileDropzone bind:files bind:onDrag mimeTypes={activeMimeTypes} />
 				{:else}
 					<div
@@ -430,50 +629,51 @@
 							<ChatInput value="Sorry, something went wrong. Please try again." disabled={true} />
 						{:else}
 							<ChatInput
-								{assistant}
 								placeholder={isReadOnly ? "This conversation is read-only." : "Ask anything"}
 								{loading}
-								bind:value={message}
+								bind:value={draft}
 								bind:files
 								mimeTypes={activeMimeTypes}
-								on:submit={handleSubmit}
+								onsubmit={handleSubmit}
 								{onPaste}
 								disabled={isReadOnly || lastIsError}
-								modelHasTools={currentModel.tools}
-								modelIsMultimodal={currentModel.multimodal}
+								{modelIsMultimodal}
+								{modelSupportsTools}
 								bind:focused
 							/>
 						{/if}
 
 						{#if loading}
-							<button
-								disabled
-								class="btn absolute bottom-1 right-0.5 size-10 self-end rounded-lg bg-transparent text-gray-400"
-							>
-								<EosIconsLoading />
-							</button>
+							<StopGeneratingBtn
+								onClick={() => onstop?.()}
+								showBorder={true}
+								classNames="absolute bottom-2 right-2 size-8 sm:size-7 self-end rounded-full border bg-white text-black shadow transition-none dark:border-transparent dark:bg-gray-600 dark:text-white"
+							/>
 						{:else}
+							{#if transcriptionEnabled}
+								<button
+									type="button"
+									class="btn absolute bottom-2 right-10 mr-1.5 size-8 self-end rounded-full border bg-white/50 text-gray-500 transition-none hover:bg-gray-50 hover:text-gray-700 dark:border-transparent dark:bg-gray-600/50 dark:text-gray-300 dark:hover:bg-gray-500 dark:hover:text-white sm:right-9 sm:size-7"
+									disabled={isReadOnly}
+									onclick={() => {
+										isRecording = true;
+									}}
+									aria-label="Start voice recording"
+								>
+									<IconMic class="size-4" />
+								</button>
+							{/if}
 							<button
-								class="btn absolute bottom-2 right-2 size-7 self-end rounded-full border bg-white text-black shadow transition-none enabled:hover:bg-white enabled:hover:shadow-inner disabled:text-gray-400/50 disabled:opacity-60 dark:border-gray-600 dark:bg-gray-900 dark:text-white dark:hover:enabled:bg-black dark:disabled:text-gray-600/50"
-								disabled={!message || isReadOnly}
+								class="btn absolute bottom-2 right-2 size-8 self-end rounded-full border bg-white text-black shadow transition-none enabled:hover:bg-white enabled:hover:shadow-inner dark:border-transparent dark:bg-gray-600 dark:text-white dark:hover:enabled:bg-black sm:size-7 {!draft ||
+								isReadOnly
+									? ''
+									: '!bg-black !text-white dark:!bg-white dark:!text-black'}"
+								disabled={!draft || isReadOnly}
 								type="submit"
 								aria-label="Send message"
 								name="submit"
 							>
-								<svg
-									width="1em"
-									height="1em"
-									viewBox="0 0 32 32"
-									fill="none"
-									xmlns="http://www.w3.org/2000/svg"
-								>
-									<path
-										fill-rule="evenodd"
-										clip-rule="evenodd"
-										d="M17.0606 4.23197C16.4748 3.64618 15.525 3.64618 14.9393 4.23197L5.68412 13.4871C5.09833 14.0729 5.09833 15.0226 5.68412 15.6084C6.2699 16.1942 7.21965 16.1942 7.80544 15.6084L14.4999 8.91395V26.7074C14.4999 27.5359 15.1715 28.2074 15.9999 28.2074C16.8283 28.2074 17.4999 27.5359 17.4999 26.7074V8.91395L24.1944 15.6084C24.7802 16.1942 25.7299 16.1942 26.3157 15.6084C26.9015 15.0226 26.9015 14.0729 26.3157 13.4871L17.0606 4.23197Z"
-										fill="currentColor"
-									/>
-								</svg>
+								<IconArrowUp />
 							</button>
 						{/if}
 					</div>
@@ -481,57 +681,69 @@
 			</form>
 			<div
 				class={{
-					"mt-2 flex justify-between self-stretch px-1 text-xs text-gray-400/90 max-md:mb-2 max-sm:gap-2": true,
+					"mt-1.5 flex h-5 items-center self-stretch whitespace-nowrap px-0.5 text-xs text-gray-400/90 max-md:mb-2 max-sm:gap-2": true,
 					"max-sm:hidden": focused && isVirtualKeyboard(),
 				}}
 			>
-				<p>
-					Model:
-					{#if !assistant}
-						{#if models.find((m) => m.id === currentModel.id)}
-							<a
-								href="{base}/settings/{currentModel.id}"
-								class="inline-flex items-center hover:underline"
-								>{currentModel.displayName}<CarbonCaretDown class="text-xxs" /></a
-							>
-						{:else}
-							<span class="inline-flex items-center line-through dark:border-gray-700">
-								{currentModel.id}
+				{#if models.find((m) => m.id === currentModel.id)}
+					{#if loading && streamingToolCallName}
+						<span class="inline-flex items-center gap-1 whitespace-nowrap text-xs">
+							<LucideHammer class="size-3" />
+							Calling tool
+							<span class="loading-dots font-medium">
+								{availableTools.find((t) => t.name === streamingToolCallName)?.displayName ??
+									streamingToolCallName}
 							</span>
-						{/if}
+						</span>
+					{:else if !currentModel.isRouter || !loading}
+						<a
+							href="{base}/settings/{currentModel.id}"
+							onclick={(e) => {
+								if (requireAuthUser()) {
+									e.preventDefault();
+								}
+							}}
+							class="inline-flex items-center gap-1 hover:underline"
+						>
+							{#if currentModel.isRouter}
+								<IconOmni />
+								{currentModel.displayName}
+							{:else}
+								Model: {currentModel.displayName}
+							{/if}
+							<CarbonCaretDown class="-ml-0.5 text-xxs" />
+						</a>
+					{:else if showRouterDetails && streamingRouterMetadata?.route}
+						<div
+							class="mr-2 flex items-center gap-1.5 whitespace-nowrap text-[.70rem] text-xs leading-none text-gray-400 dark:text-gray-400"
+						>
+							<IconOmni classNames="text-xs animate-pulse" />
+
+							<span class="router-badge-text router-shimmer">
+								{streamingRouterMetadata.route}
+							</span>
+
+							<span class="text-gray-500">with</span>
+
+							<span class="router-badge-text">
+								{streamingRouterModelName}
+							</span>
+						</div>
 					{:else}
-						{@const model = models.find((m) => m.id === assistant?.modelId)}
-						{#if model}
-							<a
-								href="{base}/settings/assistants/{assistant._id}"
-								class="inline-flex items-center border-b hover:text-gray-600 dark:border-gray-700 dark:hover:text-gray-300"
-								>{model?.displayName}<CarbonCaretDown class="text-xxs" /></a
-							>
-						{:else}
-							<span class="inline-flex items-center line-through dark:border-gray-700">
-								{currentModel.id}
-							</span>
-						{/if}
+						<div
+							class="loading-dots relative inline-flex items-center text-gray-400 dark:text-gray-400"
+							aria-label="Routing…"
+						>
+							<IconOmni classNames="text-xs animate-pulse mr-1" /> Routing
+						</div>
 					{/if}
-					<span class="max-sm:hidden">·</span><br class="sm:hidden" /> Generated content may be inaccurate
-					or false.
-				</p>
-				{#if messages.length}
-					<button
-						class="flex flex-none items-center hover:text-gray-400 max-sm:rounded-lg max-sm:bg-gray-50 max-sm:px-2.5 dark:max-sm:bg-gray-800"
-						type="button"
-						class:hover:underline={!isSharedRecently}
-						onclick={onShare}
-						disabled={isSharedRecently}
-					>
-						{#if isSharedRecently}
-							<CarbonCheckmark class="text-[.6rem] sm:mr-1.5 sm:text-green-600" />
-							<div class="text-green-600 max-sm:hidden">Link copied to clipboard</div>
-						{:else}
-							<CarbonExport class="sm:text-primary-500 text-[.6rem] sm:mr-1.5" />
-							<div class="max-sm:hidden">Share this conversation</div>
-						{/if}
-					</button>
+				{:else}
+					<span class="inline-flex items-center line-through dark:border-gray-700">
+						{currentModel.id}
+					</span>
+				{/if}
+				{#if !messages.length && !loading}
+					<span>Generated content may be inaccurate or false.</span>
 				{/if}
 			</div>
 		</div>
@@ -553,6 +765,67 @@
 		}
 		100% {
 			box-shadow: 0 0 0 0 rgba(59, 130, 246, 0);
+		}
+	}
+
+	.router-badge-text {
+		display: inline-block;
+		position: relative;
+		color: inherit;
+	}
+
+	.router-shimmer {
+		display: inline-block;
+		background-image: linear-gradient(
+			90deg,
+			rgba(156, 163, 175, 1) 0%,
+			rgba(156, 163, 175, 0.6) 10%,
+			rgba(156, 163, 175, 0.6) 50%,
+			rgba(156, 163, 175, 0.6) 90%,
+			rgba(156, 163, 175, 1) 100%
+		);
+		background-size: 220% 100%;
+		animation: router-shimmer 2.8s linear infinite;
+		background-clip: text;
+		-webkit-background-clip: text;
+		color: transparent;
+		-webkit-text-fill-color: transparent;
+	}
+
+	:global(.dark) .router-shimmer {
+		background-image: linear-gradient(
+			90deg,
+			rgba(255, 255, 255, 0.15) 0%,
+			rgba(255, 255, 255, 0.7) 50%,
+			rgba(255, 255, 255, 0.15) 100%
+		);
+	}
+
+	@keyframes router-shimmer {
+		0% {
+			background-position: 200% 0;
+		}
+		100% {
+			background-position: -200% 0;
+		}
+	}
+
+	.loading-dots::after {
+		content: "";
+		animation: dots-content 0.9s steps(1, end) infinite;
+	}
+	@keyframes dots-content {
+		0% {
+			content: "";
+		}
+		33% {
+			content: ".";
+		}
+		66% {
+			content: "..";
+		}
+		88% {
+			content: "...";
 		}
 	}
 </style>

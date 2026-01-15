@@ -1,25 +1,25 @@
-import type { WebSearchSource } from "$lib/types/WebSearch";
+import type { InferenceProvider } from "@huggingface/inference";
 import type { ToolCall, ToolResult } from "$lib/types/Tool";
 
 export type MessageUpdate =
 	| MessageStatusUpdate
 	| MessageTitleUpdate
 	| MessageToolUpdate
-	| MessageWebSearchUpdate
 	| MessageStreamUpdate
 	| MessageFileUpdate
 	| MessageFinalAnswerUpdate
-	| MessageReasoningUpdate;
+	| MessageReasoningUpdate
+	| MessageRouterMetadataUpdate;
 
 export enum MessageUpdateType {
 	Status = "status",
 	Title = "title",
 	Tool = "tool",
-	WebSearch = "webSearch",
 	Stream = "stream",
 	File = "file",
 	FinalAnswer = "finalAnswer",
 	Reasoning = "reasoning",
+	RouterMetadata = "routerMetadata",
 }
 
 // Status
@@ -33,79 +33,8 @@ export interface MessageStatusUpdate {
 	type: MessageUpdateType.Status;
 	status: MessageUpdateStatus;
 	message?: string;
+	statusCode?: number;
 }
-
-// Web search
-export enum MessageWebSearchUpdateType {
-	Update = "update",
-	Error = "error",
-	Sources = "sources",
-	Finished = "finished",
-}
-export interface BaseMessageWebSearchUpdate<TSubType extends MessageWebSearchUpdateType> {
-	type: MessageUpdateType.WebSearch;
-	subtype: TSubType;
-}
-export interface MessageWebSearchErrorUpdate
-	extends BaseMessageWebSearchUpdate<MessageWebSearchUpdateType.Error> {
-	message: string;
-	args?: string[];
-}
-export interface MessageWebSearchGeneralUpdate
-	extends BaseMessageWebSearchUpdate<MessageWebSearchUpdateType.Update> {
-	message: string;
-	args?: string[];
-}
-export interface MessageWebSearchSourcesUpdate
-	extends BaseMessageWebSearchUpdate<MessageWebSearchUpdateType.Sources> {
-	message: string;
-	sources: WebSearchSource[];
-}
-export type MessageWebSearchFinishedUpdate =
-	BaseMessageWebSearchUpdate<MessageWebSearchUpdateType.Finished>;
-export type MessageWebSearchUpdate =
-	| MessageWebSearchErrorUpdate
-	| MessageWebSearchGeneralUpdate
-	| MessageWebSearchSourcesUpdate
-	| MessageWebSearchFinishedUpdate;
-
-// Tool
-export enum MessageToolUpdateType {
-	/** A request to call a tool alongside it's parameters */
-	Call = "call",
-	/** The result of a tool call */
-	Result = "result",
-	/** Error while running tool */
-	Error = "error",
-	/** ETA update */
-	ETA = "eta",
-}
-
-interface MessageToolBaseUpdate<TSubType extends MessageToolUpdateType> {
-	type: MessageUpdateType.Tool;
-	subtype: TSubType;
-	uuid: string;
-}
-export interface MessageToolCallUpdate extends MessageToolBaseUpdate<MessageToolUpdateType.Call> {
-	call: ToolCall;
-}
-export interface MessageToolResultUpdate
-	extends MessageToolBaseUpdate<MessageToolUpdateType.Result> {
-	result: ToolResult;
-}
-export interface MessageToolErrorUpdate extends MessageToolBaseUpdate<MessageToolUpdateType.Error> {
-	message: string;
-}
-
-export interface MessageToolETAUpdate extends MessageToolBaseUpdate<MessageToolUpdateType.ETA> {
-	eta: number;
-}
-
-export type MessageToolUpdate =
-	| MessageToolCallUpdate
-	| MessageToolResultUpdate
-	| MessageToolErrorUpdate
-	| MessageToolETAUpdate;
 
 // Everything else
 export interface MessageTitleUpdate {
@@ -115,7 +44,55 @@ export interface MessageTitleUpdate {
 export interface MessageStreamUpdate {
 	type: MessageUpdateType.Stream;
 	token: string;
+	/** Length of the original token. Used for compressed/persisted stream markers where token is empty. */
+	len?: number;
 }
+
+// Tool updates (for MCP and function calling)
+export enum MessageToolUpdateType {
+	Call = "call",
+	Result = "result",
+	Error = "error",
+	ETA = "eta",
+	Progress = "progress",
+}
+
+interface MessageToolUpdateBase<TSubtype extends MessageToolUpdateType> {
+	type: MessageUpdateType.Tool;
+	subtype: TSubtype;
+	uuid: string;
+}
+
+export interface MessageToolCallUpdate extends MessageToolUpdateBase<MessageToolUpdateType.Call> {
+	call: ToolCall;
+}
+
+export interface MessageToolResultUpdate
+	extends MessageToolUpdateBase<MessageToolUpdateType.Result> {
+	result: ToolResult;
+}
+
+export interface MessageToolErrorUpdate extends MessageToolUpdateBase<MessageToolUpdateType.Error> {
+	message: string;
+}
+
+export interface MessageToolEtaUpdate extends MessageToolUpdateBase<MessageToolUpdateType.ETA> {
+	eta: number;
+}
+
+export interface MessageToolProgressUpdate
+	extends MessageToolUpdateBase<MessageToolUpdateType.Progress> {
+	progress: number;
+	total?: number;
+	message?: string;
+}
+
+export type MessageToolUpdate =
+	| MessageToolCallUpdate
+	| MessageToolResultUpdate
+	| MessageToolErrorUpdate
+	| MessageToolEtaUpdate
+	| MessageToolProgressUpdate;
 
 export enum MessageReasoningUpdateType {
 	Stream = "stream",
@@ -145,5 +122,10 @@ export interface MessageFinalAnswerUpdate {
 	type: MessageUpdateType.FinalAnswer;
 	text: string;
 	interrupted: boolean;
-	webSources?: { uri: string; title: string }[];
+}
+export interface MessageRouterMetadataUpdate {
+	type: MessageUpdateType.RouterMetadata;
+	route: string;
+	model: string;
+	provider?: InferenceProvider;
 }

@@ -1,35 +1,48 @@
 # Architecture
 
-This document discusses the high level overview of the Chat UI codebase. If you're looking to contribute or just want to understand how the codebase works, this is the place for you!
+This document provides a high-level overview of the Chat UI codebase. If you're looking to contribute or understand how the codebase works, this is the place for you!
 
 ## Overview
 
-Chat UI provides a simple interface connecting LLMs to external information and tools. The project uses [MongoDB](https://www.mongodb.com/) and [SvelteKit](https://kit.svelte.dev/) with [Tailwind](https://tailwindcss.com/).
+Chat UI provides a simple interface connecting LLMs to external tools via MCP. The project uses [MongoDB](https://www.mongodb.com/) and [SvelteKit](https://kit.svelte.dev/) with [Tailwind](https://tailwindcss.com/).
+
+Key architectural decisions:
+
+- **OpenAI-compatible only**: All model interactions use the OpenAI API format
+- **MCP for tools**: Tool calling is handled via Model Context Protocol servers
+- **Auto-discovery**: Models are discovered from the `/models` endpoint
 
 ## Code Map
 
-This section discusses various modules of the codebase briefly. The headings are not paths since the codebase structure may change.
-
 ### `routes`
 
-Provides all of the routes rendered with SSR via SvelteKit. The majority of backend and frontend logic can be found here, with some modules being pulled out into `lib` for the client and `lib/server` for the server.
+All routes rendered with SSR via SvelteKit. The majority of backend and frontend logic lives here, with shared modules in `lib` (client) and `lib/server` (server).
 
 ### `textGeneration`
 
-Provides a standard interface for most chat features such as model output, web search, assistants and tools. Outputs `MessageUpdate`s which provide fine-grained updates on the request status such as new tokens and web search results.
+Provides a standard interface for chat features including model output, tool calls, and streaming. Outputs `MessageUpdate`s for fine-grained status updates (new tokens, tool results, etc.).
 
-### `endpoints`/`embeddingEndpoints`
+### `endpoints`
 
-Provides a common streaming interface for many third party LLM and embedding providers.
+Provides the streaming interface for OpenAI-compatible endpoints. Models are fetched and cached from `${OPENAI_BASE_URL}/models`.
 
-### `websearch`
+### `mcp`
 
-Implements web search querying and RAG. See the [Web Search](../configuration/web-search) section for more information.
+Implements MCP client functionality for tool discovery and execution. See [MCP Tools](../configuration/mcp-tools) for configuration.
 
-### `tools`
+### `llmRouter`
 
-Provides a common interface for external tools called by LLMs. See the [Tools](../configuration/models/tools.md) section for more information
+Intelligent routing logic that selects the best model for each request. Uses the Arch router model for classification. See [LLM Router](../configuration/llm-router) for details.
 
 ### `migrations`
 
-Includes all MongoDB migrations for maintaining backwards compatibility across schema changes. Any changes to the schema must include a migration
+MongoDB migrations for maintaining backwards compatibility across schema changes. Any schema changes must include a migration.
+
+## Development
+
+```bash
+npm install
+npm run dev
+```
+
+The dev server runs at `http://localhost:5173` with hot reloading.

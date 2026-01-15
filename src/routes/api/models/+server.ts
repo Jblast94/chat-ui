@@ -8,7 +8,7 @@ export async function GET() {
 			name: model.name,
 			websiteUrl: model.websiteUrl ?? "https://huggingface.co",
 			modelUrl: model.modelUrl ?? "https://huggingface.co",
-			tokenizer: model.tokenizer,
+			// tokenizer removed in this build
 			datasetName: model.datasetName,
 			datasetUrl: model.datasetUrl,
 			displayName: model.displayName,
@@ -17,8 +17,8 @@ export async function GET() {
 			promptExamples: model.promptExamples ?? [],
 			preprompt: model.preprompt ?? "",
 			multimodal: model.multimodal ?? false,
+			supportsTools: (model as unknown as { supportsTools?: boolean }).supportsTools ?? false,
 			unlisted: model.unlisted ?? false,
-			tools: model.tools ?? false,
 			hasInferenceAPI: model.hasInferenceAPI ?? false,
 		}));
 	return Response.json(res);

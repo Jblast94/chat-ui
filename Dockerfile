@@ -1,8 +1,7 @@
 # syntax=docker/dockerfile:1
 ARG INCLUDE_DB=false
 
-FROM node:20-slim AS base
-ENV PLAYWRIGHT_SKIP_BROWSER_GC=1
+FROM node:24-slim AS base
 
 # install dotenv-cli
 RUN npm install -g dotenv-cli
@@ -20,43 +19,32 @@ WORKDIR /app
 # add a .env.local if the user doesn't bind a volume to it
 RUN touch /app/.env.local
 
-
-RUN npm i --no-package-lock --no-save playwright@1.52.0
-
 USER root
-
-RUN mkdir -p /data/models
-RUN chown -R 1000:1000 /data/models
-
 RUN apt-get update
-RUN apt-get install gnupg curl git cmake clang libgomp1 -y
+RUN apt-get install -y libgomp1 libcurl4 curl dnsutils nano
 
-RUN npx playwright install --with-deps chromium
-
-RUN chown -R 1000:1000 /home/user/.npm
+# ensure npm cache dir exists before adjusting ownership
+RUN mkdir -p /home/user/.npm && chown -R 1000:1000 /home/user/.npm
 
 USER user
 
 
 COPY --chown=1000 .env /app/.env
 COPY --chown=1000 entrypoint.sh /app/entrypoint.sh
-COPY --chown=1000 gcp-*.json /app/
 COPY --chown=1000 package.json /app/package.json
 COPY --chown=1000 package-lock.json /app/package-lock.json
 
 RUN chmod +x /app/entrypoint.sh
 
-FROM node:20 AS builder
+FROM node:24 AS builder
 
 WORKDIR /app
 
 COPY --link --chown=1000 package-lock.json package.json ./
 
 ARG APP_BASE=
-ARG PUBLIC_APP_COLOR=blue
-ARG SKIP_LLAMA_CPP_BUILD
+ARG PUBLIC_APP_COLOR=
 ENV BODY_SIZE_LIMIT=15728640
-ENV SKIP_LLAMA_CPP_BUILD=$SKIP_LLAMA_CPP_BUILD
 
 RUN --mount=type=cache,target=/app/.npm \
     npm set cache /app/.npm && \
@@ -93,12 +81,10 @@ ENV INCLUDE_DB=${INCLUDE_DB}
 
 # svelte requires APP_BASE at build time so it must be passed as a build arg
 ARG APP_BASE=
-# tailwind requires the primary theme to be known at build time so it must be passed as a build arg
-ARG PUBLIC_APP_COLOR=blue
+ARG PUBLIC_APP_COLOR=
 ARG PUBLIC_COMMIT_SHA=
 ENV PUBLIC_COMMIT_SHA=${PUBLIC_COMMIT_SHA}
 ENV BODY_SIZE_LIMIT=15728640
-ENV MODELS_STORAGE_PATH=/data/models
 
 #import the build & dependencies
 COPY --from=builder --chown=1000 /app/build /app/build

@@ -1,6 +1,5 @@
 <script lang="ts">
-	import { createEventDispatcher } from "svelte";
-	import { page } from "$app/stores";
+	import { page } from "$app/state";
 	import type { MessageFile } from "$lib/types/Message";
 	import CarbonClose from "~icons/carbon/close";
 	import CarbonDocumentBlank from "~icons/carbon/document-blank";
@@ -10,19 +9,20 @@
 	import AudioPlayer from "../players/AudioPlayer.svelte";
 	import EosIconsLoading from "~icons/eos-icons/loading";
 	import { base } from "$app/paths";
+	import { TEXT_MIME_ALLOWLIST } from "$lib/constants/mime";
 
 	interface Props {
 		file: MessageFile;
 		canClose?: boolean;
+		onclose?: () => void;
 	}
 
-	let { file, canClose = true }: Props = $props();
+	let { file, canClose = true, onclose }: Props = $props();
 
 	let showModal = $state(false);
 
-	let urlNotTrailing = $derived($page.url.pathname.replace(/\/$/, ""));
-
-	const dispatch = createEventDispatcher<{ close: void }>();
+	// Capture URL once at component creation to prevent reactive updates during navigation
+	let urlNotTrailing = page.url.pathname.replace(/\/$/, "");
 
 	function truncateMiddle(text: string, maxLength: number): string {
 		if (text.length <= maxLength) {
@@ -44,20 +44,28 @@
 	const isVideo = (mime: string) =>
 		mime.startsWith("video/") || mime === "mp4" || mime === "x-mpeg";
 
+	function matchesAllowed(contentType: string, allowed: readonly string[]): boolean {
+		const ct = contentType.split(";")[0]?.trim().toLowerCase();
+		if (!ct) return false;
+		const [ctType, ctSubtype] = ct.split("/");
+		for (const a of allowed) {
+			const [aType, aSubtype] = a.toLowerCase().split("/");
+			const typeOk = aType === "*" || aType === ctType;
+			const subOk = aSubtype === "*" || aSubtype === ctSubtype;
+			if (typeOk && subOk) return true;
+		}
+		return false;
+	}
+
 	const isPlainText = (mime: string) =>
-		mime === "text/plain" ||
-		mime === "text/csv" ||
-		mime === "text/markdown" ||
-		mime === "application/json" ||
-		mime === "application/xml" ||
-		mime === "application/vnd.chatui.clipboard";
+		mime === "application/vnd.chatui.clipboard" || matchesAllowed(mime, TEXT_MIME_ALLOWLIST);
 
 	let isClickable = $derived(isImage(file.mime) || isPlainText(file.mime));
 </script>
 
 {#if showModal && isClickable}
 	<!-- show the image file full screen, click outside to exit -->
-	<Modal width="sm:max-w-[800px]" on:close={() => (showModal = false)}>
+	<Modal width="xl:max-w-[75dvw]" onclose={() => (showModal = false)}>
 		{#if isImage(file.mime)}
 			{#if file.type === "hash"}
 				<img
@@ -74,8 +82,11 @@
 				/>
 			{/if}
 		{:else if isPlainText(file.mime)}
-			<div class="relative flex h-full w-full flex-col gap-4 p-4">
-				<h3 class="-mb-4 pt-2 text-xl font-bold">{file.name}</h3>
+			<div class="relative flex h-full w-full flex-col gap-2 p-4">
+				<div class="flex items-center gap-1">
+					<CarbonDocument />
+					<h3 class="text-lg font-semibold">{file.name}</h3>
+				</div>
 				{#if file.mime === "application/vnd.chatui.clipboard"}
 					<p class="text-sm text-gray-500">
 						If you prefer to inject clipboard content directly in the chat, you can disable this
@@ -84,7 +95,7 @@
 					</p>
 				{/if}
 				<button
-					class="absolute right-4 top-4 text-xl text-gray-500 hover:text-gray-800"
+					class="absolute right-4 top-4 text-xl text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-white"
 					onclick={() => (showModal = false)}
 				>
 					<CarbonClose class="text-xl" />
@@ -96,7 +107,7 @@
 						</div>
 					{:then result}
 						<pre
-							class="w-full whitespace-pre-wrap break-words pt-0 text-sm"
+							class="w-full whitespace-pre-wrap break-words pt-0 text-xs"
 							class:font-sans={file.mime === "text/plain" ||
 								file.mime === "application/vnd.chatui.clipboard"}
 							class:font-mono={file.mime !== "text/plain" &&
@@ -104,7 +115,7 @@
 					{/await}
 				{:else}
 					<pre
-						class="w-full whitespace-pre-wrap break-words pt-0 text-sm"
+						class="w-full whitespace-pre-wrap break-words pt-0 text-xs"
 						class:font-sans={file.mime === "text/plain" ||
 							file.mime === "application/vnd.chatui.clipboard"}
 						class:font-mono={file.mime !== "text/plain" &&
@@ -131,13 +142,13 @@
 >
 	<div class="group relative flex items-center rounded-xl shadow-sm">
 		{#if isImage(file.mime)}
-			<div class="size-48 overflow-hidden rounded-xl">
+			<div class="h-36 overflow-hidden rounded-xl">
 				<img
 					src={file.type === "base64"
 						? `data:${file.mime};base64,${file.value}`
 						: urlNotTrailing + "/output/" + file.value}
 					alt={file.name}
-					class="h-full w-full bg-gray-200 object-cover dark:bg-gray-800"
+					class="h-36 bg-gray-200 object-cover dark:bg-gray-800"
 				/>
 			</div>
 		{:else if isAudio(file.mime)}
@@ -161,7 +172,7 @@
 			</div>
 		{:else if isPlainText(file.mime)}
 			<div
-				class="flex h-14 w-72 items-center gap-2 overflow-hidden rounded-xl border border-gray-200 bg-white p-2 dark:border-gray-800 dark:bg-gray-900"
+				class="flex h-14 w-64 items-center gap-2 overflow-hidden rounded-xl border border-gray-200 bg-white p-2 dark:border-gray-800 dark:bg-gray-900 2xl:w-72"
 				class:file-hoverable={isClickable}
 			>
 				<div
@@ -180,7 +191,7 @@
 					{/if}
 				</dl>
 			</div>
-		{:else if file.mime === "octet-stream"}
+		{:else if file.mime === "application/octet-stream"}
 			<div
 				class="flex h-14 w-72 items-center gap-2 overflow-hidden rounded-xl border border-gray-200 bg-white p-2 dark:border-gray-800 dark:bg-gray-900"
 				class:file-hoverable={isClickable}
@@ -232,7 +243,7 @@
 				onclick={(e) => {
 					e.preventDefault();
 					e.stopPropagation();
-					dispatch("close");
+					onclose?.();
 				}}
 			>
 				<CarbonClose class=" text-xs  text-white" />

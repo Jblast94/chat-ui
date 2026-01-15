@@ -39,6 +39,7 @@ jobs:
           cache: "npm"
       - run: |
           npm ci
+          npx playwright install
       - name: "Tests"
         run: |
           npm run test
@@ -53,7 +54,6 @@ jobs:
         run: |
           docker build \
             --build-arg INCLUDE_DB=true \
-            --build-arg SKIP_LLAMA_CPP_BUILD=true \
             -t chat-ui-test:latest .
 
       - name: Run Docker container

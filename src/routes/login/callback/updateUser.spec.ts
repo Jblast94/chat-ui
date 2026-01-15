@@ -6,7 +6,7 @@ import { ObjectId } from "mongodb";
 import { DEFAULT_SETTINGS } from "$lib/types/Settings";
 import { defaultModel } from "$lib/server/models";
 import { findUser } from "$lib/server/auth";
-import { defaultEmbeddingModel } from "$lib/server/embeddingModels";
+import type { TokenSet } from "openid-client";
 
 const userData = {
 	preferred_username: "new-username",
@@ -21,6 +21,13 @@ const locals = {
 	sessionId: "1234567890",
 	isAdmin: false,
 };
+
+const token = {
+	access_token: "access_token",
+	refresh_token: "refresh_token",
+	expires_at: Math.floor(Date.now() / 1000) + 3600, // Expires 1 hour from now
+	expires_in: 3600,
+} as TokenSet;
 
 // @ts-expect-error SvelteKit cookies dumb mock
 const cookiesMock: Cookies = {
@@ -48,7 +55,7 @@ const insertRandomConversations = async (count: number) => {
 			title: "random title",
 			messages: [],
 			model: defaultModel.id,
-			embeddingModel: defaultEmbeddingModel.id,
+			// embedding model removed in this build
 			createdAt: new Date(),
 			updatedAt: new Date(),
 			sessionId: locals.sessionId,
@@ -62,7 +69,7 @@ describe("login", () => {
 	it("should update user if existing", async () => {
 		await insertRandomUser();
 
-		await updateUser({ userData, locals, cookies: cookiesMock });
+		await updateUser({ userData, locals, cookies: cookiesMock, token });
 
 		const existingUser = await collections.users.findOne({ hfUserId: userData.sub });
 
@@ -76,7 +83,7 @@ describe("login", () => {
 
 		await insertRandomConversations(2);
 
-		await updateUser({ userData, locals, cookies: cookiesMock });
+		await updateUser({ userData, locals, cookies: cookiesMock, token });
 
 		const conversationCount = await collections.conversations.countDocuments({
 			userId: insertedId,
@@ -89,9 +96,10 @@ describe("login", () => {
 	});
 
 	it("should create default settings for new user", async () => {
-		await updateUser({ userData, locals, cookies: cookiesMock });
+		await updateUser({ userData, locals, cookies: cookiesMock, token });
 
-		const user = await findUser(locals.sessionId);
+		// updateUser creates a new sessionId, so we need to use the updated value
+		const user = (await findUser(locals.sessionId, undefined, new URL("http://localhost"))).user;
 
 		assert.exists(user);
 
@@ -101,7 +109,6 @@ describe("login", () => {
 			userId: user?._id,
 			updatedAt: expect.any(Date),
 			createdAt: expect.any(Date),
-			ethicsModalAcceptedAt: expect.any(Date),
 			...DEFAULT_SETTINGS,
 		});
 
@@ -111,14 +118,13 @@ describe("login", () => {
 	it("should migrate pre-existing settings for pre-existing user", async () => {
 		const { insertedId } = await collections.settings.insertOne({
 			sessionId: locals.sessionId,
-			ethicsModalAcceptedAt: new Date(),
 			updatedAt: new Date(),
 			createdAt: new Date(),
 			...DEFAULT_SETTINGS,
 			shareConversationsWithModelAuthors: false,
 		});
 
-		await updateUser({ userData, locals, cookies: cookiesMock });
+		await updateUser({ userData, locals, cookies: cookiesMock, token });
 
 		const settings = await collections.settings.findOne({
 			_id: insertedId,
@@ -133,7 +139,6 @@ describe("login", () => {
 			userId: user?._id,
 			updatedAt: expect.any(Date),
 			createdAt: expect.any(Date),
-			ethicsModalAcceptedAt: expect.any(Date),
 			...DEFAULT_SETTINGS,
 			shareConversationsWithModelAuthors: false,
 		});

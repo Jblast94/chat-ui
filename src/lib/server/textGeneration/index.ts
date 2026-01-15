@@ -1,26 +1,15 @@
-import { runWebSearch } from "$lib/server/websearch/runWebSearch";
 import { preprocessMessages } from "../endpoints/preprocessMessages";
 
 import { generateTitleForConversation } from "./title";
-import {
-	assistantHasDynamicPrompt,
-	assistantHasWebSearch,
-	getAssistantById,
-	processPreprompt,
-} from "./assistant";
-import { getTools, runTools } from "./tools";
-import type { WebSearch } from "$lib/types/WebSearch";
 import {
 	type MessageUpdate,
 	MessageUpdateType,
 	MessageUpdateStatus,
 } from "$lib/types/MessageUpdate";
 import { generate } from "./generate";
+import { runMcpFlow } from "./mcp/runMcpFlow";
 import { mergeAsyncGenerators } from "$lib/utils/mergeAsyncGenerators";
 import type { TextGenerationContext } from "./types";
-import type { ToolResult } from "$lib/types/Tool";
-import { toolHasName } from "../tools/utils";
-import directlyAnswer from "../tools/directlyAnswer";
 
 async function* keepAlive(done: AbortSignal): AsyncGenerator<MessageUpdate, undefined, undefined> {
 	while (!done.aborted) {
@@ -35,7 +24,7 @@ async function* keepAlive(done: AbortSignal): AsyncGenerator<MessageUpdate, unde
 export async function* textGeneration(ctx: TextGenerationContext) {
 	const done = new AbortController();
 
-	const titleGen = generateTitleForConversation(ctx.conv);
+	const titleGen = generateTitleForConversation(ctx.conv, ctx.locals);
 	const textGen = textGenerationWithoutTitle(ctx, done);
 	const keepAliveGen = keepAlive(done.signal);
 
@@ -53,37 +42,40 @@ async function* textGenerationWithoutTitle(
 		status: MessageUpdateStatus.Started,
 	};
 
-	ctx.assistant ??= await getAssistantById(ctx.conv.assistantId);
-	const { model, conv, messages, assistant, isContinue, webSearch, toolsPreference } = ctx;
+	const { conv, messages } = ctx;
 	const convId = conv._id;
 
-	let webSearchResult: WebSearch | undefined;
+	const preprompt = conv.preprompt;
 
-	// run websearch if:
-	// - it's not continuing a previous message
-	// - AND the model doesn't support tools and websearch is selected
-	// - OR the assistant has websearch enabled (no tools for assistants for now)
-	if (!isContinue && ((webSearch && !conv.assistantId) || assistantHasWebSearch(assistant))) {
-		webSearchResult = yield* runWebSearch(conv, messages, assistant?.rag);
+	const processedMessages = await preprocessMessages(messages, convId);
+
+	// Try MCP tool flow first; fall back to default generation if not selected/available
+	try {
+		const mcpGen = runMcpFlow({
+			model: ctx.model,
+			conv,
+			messages: processedMessages,
+			assistant: ctx.assistant,
+			forceMultimodal: ctx.forceMultimodal,
+			forceTools: ctx.forceTools,
+			locals: ctx.locals,
+			preprompt,
+			abortSignal: ctx.abortController.signal,
+		});
+
+		let step = await mcpGen.next();
+		while (!step.done) {
+			yield step.value;
+			step = await mcpGen.next();
+		}
+		const didRunMcp = Boolean(step.value);
+		if (!didRunMcp) {
+			// fallback to normal text generation
+			yield* generate({ ...ctx, messages: processedMessages }, preprompt);
+		}
+	} catch {
+		// On any MCP error, fall back to normal generation
+		yield* generate({ ...ctx, messages: processedMessages }, preprompt);
 	}
-
-	let preprompt = conv.preprompt;
-	if (assistantHasDynamicPrompt(assistant) && preprompt) {
-		preprompt = await processPreprompt(preprompt, messages.at(-1)?.content);
-		if (messages[0].from === "system") messages[0].content = preprompt;
-	}
-
-	let toolResults: ToolResult[] = [];
-	let tools = model.tools ? await getTools(toolsPreference, ctx.assistant) : undefined;
-
-	if (tools) {
-		const toolCallsRequired = tools.some((tool) => !toolHasName(directlyAnswer.name, tool));
-		if (toolCallsRequired) {
-			toolResults = yield* runTools(ctx, tools, preprompt);
-		} else tools = undefined;
-	}
-
-	const processedMessages = await preprocessMessages(messages, webSearchResult, convId);
-	yield* generate({ ...ctx, messages: processedMessages }, toolResults, preprompt);
 	done.abort();
 }

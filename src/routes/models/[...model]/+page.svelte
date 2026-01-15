@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { page } from "$app/state";
 	import { base } from "$app/paths";
-	import { goto } from "$app/navigation";
-	import { onMount } from "svelte";
+	import { goto, replaceState } from "$app/navigation";
+	import { onMount, tick } from "svelte";
 	import { usePublicConfig } from "$lib/utils/PublicConfig.svelte";
 
 	import ChatWindow from "$lib/components/chat/ChatWindow.svelte";
@@ -10,11 +10,15 @@
 	import { useSettingsStore } from "$lib/stores/settings";
 	import { ERROR_MESSAGES, error } from "$lib/stores/errors";
 	import { pendingMessage } from "$lib/stores/pendingMessage";
+	import { sanitizeUrlParam } from "$lib/utils/urlParams";
+	import { loadAttachmentsFromUrls } from "$lib/utils/loadAttachmentsFromUrls";
+	import { requireAuthUser } from "$lib/utils/auth";
 
 	let { data } = $props();
 
 	let loading = $state(false);
 	let files: File[] = $state([]);
+	let draft = $state("");
 
 	const settings = useSettingsStore();
 	const modelId = page.params.model;
@@ -60,8 +64,58 @@
 	}
 
 	onMount(async () => {
-		const query = page.url.searchParams.get("q");
-		if (query) createConversation(query);
+		try {
+			// Check if auth is required before processing any query params
+			const hasQ = page.url.searchParams.has("q");
+			const hasPrompt = page.url.searchParams.has("prompt");
+			const hasAttachments = page.url.searchParams.has("attachments");
+
+			if ((hasQ || hasPrompt || hasAttachments) && requireAuthUser()) {
+				return; // Redirecting to login, will return to this URL after
+			}
+
+			// Handle attachments parameter first
+			if (hasAttachments) {
+				const result = await loadAttachmentsFromUrls(page.url.searchParams);
+				files = result.files;
+
+				// Show errors if any
+				if (result.errors.length > 0) {
+					console.error("Failed to load some attachments:", result.errors);
+					error.set(
+						`Failed to load ${result.errors.length} attachment(s). Check console for details.`
+					);
+				}
+
+				// Clean up URL
+				const url = new URL(page.url);
+				url.searchParams.delete("attachments");
+				history.replaceState({}, "", url);
+			}
+
+			const query = sanitizeUrlParam(page.url.searchParams.get("q"));
+			if (query) {
+				void createConversation(query);
+				const url = new URL(page.url);
+				url.searchParams.delete("q");
+				tick().then(() => {
+					replaceState(url, page.state);
+				});
+				return;
+			}
+
+			const promptQuery = sanitizeUrlParam(page.url.searchParams.get("prompt"));
+			if (promptQuery && !draft) {
+				draft = promptQuery;
+				const url = new URL(page.url);
+				url.searchParams.delete("prompt");
+				tick().then(() => {
+					replaceState(url, page.state);
+				});
+			}
+		} catch (err) {
+			console.error("Failed to process URL parameters:", err);
+		}
 
 		settings.instantSet({ activeModel: modelId });
 	});
@@ -80,9 +134,10 @@
 </svelte:head>
 
 <ChatWindow
-	on:message={(ev) => createConversation(ev.detail)}
+	onmessage={(message) => createConversation(message)}
 	{loading}
-	currentModel={findCurrentModel([...data.models, ...data.oldModels], modelId)}
+	currentModel={findCurrentModel(data.models, data.oldModels, modelId)}
 	models={data.models}
 	bind:files
+	bind:draft
 />

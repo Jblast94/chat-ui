@@ -10,4 +10,13 @@ export interface Session extends Timestamps {
 	ip?: string;
 	expiresAt: Date;
 	admin?: boolean;
+	coupledCookieHash?: string;
+
+	oauth?: {
+		token: {
+			value: string;
+			expiresAt: Date;
+		};
+		refreshToken?: string;
+	};
 }

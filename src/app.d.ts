@@ -10,8 +10,11 @@ declare global {
 		// interface Error {}
 		interface Locals {
 			sessionId: string;
-			user?: User & { logoutDisabled?: boolean };
+			user?: User;
 			isAdmin: boolean;
+			token?: string;
+			/** Organization to bill inference requests to (from settings) */
+			billingOrganization?: string;
 		}
 
 		interface Error {

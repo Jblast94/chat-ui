@@ -1,34 +1,62 @@
 # Running Locally
 
-You may start an instance locally for non-production use cases. For production use cases, please see the other installation options.
+## Quick Start
+
+1. Create a `.env.local` file with your API credentials:
+
+```ini
+OPENAI_BASE_URL=https://router.huggingface.co/v1
+OPENAI_API_KEY=hf_************************
+```
+
+2. Install and run:
+
+```bash
+npm install
+npm run dev -- --open
+```
+
+That's it! Chat UI will discover available models automatically from your endpoint.
 
 ## Configuration
 
-The default config for Chat UI is stored in the `.env` file. You will need to override some values to get Chat UI to run locally. Start by creating a `.env.local` file in the root of the repository as per the [configuration section](../configuration/overview). The bare minimum config you need to get Chat UI to run locally is the following:
+Chat UI connects to any OpenAI-compatible API. Set `OPENAI_BASE_URL` to your provider:
 
-```ini
-MONGODB_URL=<the URL to your MongoDB instance>
-HF_TOKEN=<your access token> # find your token at hf.co/settings/token
-```
+| Provider     | `OPENAI_BASE_URL`                  |
+| ------------ | ---------------------------------- |
+| Hugging Face | `https://router.huggingface.co/v1` |
+| Ollama       | `http://127.0.0.1:11434/v1`        |
+| llama.cpp    | `http://127.0.0.1:8080/v1`         |
+| OpenRouter   | `https://openrouter.ai/api/v1`     |
+
+See the [configuration overview](../configuration/overview) for all available options.
 
 ## Database
 
-The chat history is stored in a MongoDB instance, and having a DB instance available is needed for Chat UI to work.
+For **development**, MongoDB is optional. When `MONGODB_URL` is not set, Chat UI uses an embedded MongoDB server that persists data to the `./db` folder.
 
-You can use a local MongoDB instance. The easiest way is to spin one up using docker with persistence:
+For **production**, you should use a dedicated MongoDB instance:
+
+### Option 1: Local MongoDB (Docker)
 
 ```bash
 docker run -d -p 27017:27017 -v mongo-chat-ui:/data --name mongo-chat-ui mongo:latest
 ```
 
-In which case the url of your DB will be `MONGODB_URL=mongodb://localhost:27017`.
+Then set `MONGODB_URL=mongodb://localhost:27017` in `.env.local`.
 
-Alternatively, you can use a [free MongoDB Atlas](https://www.mongodb.com/pricing) instance for this, Chat UI should fit comfortably within their free tier. After which you can set the `MONGODB_URL` variable in `.env.local` to match your instance.
+### Option 2: MongoDB Atlas (Managed)
 
-## Starting the server
+Use [MongoDB Atlas free tier](https://www.mongodb.com/pricing) for a managed database. Copy the connection string to `MONGODB_URL`.
+
+## Running in Production
+
+For production deployments:
 
 ```bash
-npm ci # install dependencies
-npm run build # build the project
-npm run preview -- --open # start the server with & open your instance at http://localhost:4173
+npm install
+npm run build
+npm run preview
 ```
+
+The server listens on `http://localhost:4173` by default.

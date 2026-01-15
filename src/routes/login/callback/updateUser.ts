@@ -1,9 +1,13 @@
-import { refreshSessionCookie } from "$lib/server/auth";
+import {
+	getCoupledCookieHash,
+	refreshSessionCookie,
+	tokenSetToSessionOauth,
+} from "$lib/server/auth";
 import { collections } from "$lib/server/database";
 import { ObjectId } from "mongodb";
 import { DEFAULT_SETTINGS } from "$lib/types/Settings";
 import { z } from "zod";
-import type { UserinfoResponse } from "openid-client";
+import type { UserinfoResponse, TokenSet } from "openid-client";
 import { error, type Cookies } from "@sveltejs/kit";
 import crypto from "crypto";
 import { sha256 } from "$lib/utils/sha256";
@@ -14,12 +18,13 @@ import { logger } from "$lib/server/logger";
 
 export async function updateUser(params: {
 	userData: UserinfoResponse;
+	token: TokenSet;
 	locals: App.Locals;
 	cookies: Cookies;
 	userAgent?: string;
 	ip?: string;
 }) {
-	const { userData, locals, cookies, userAgent, ip } = params;
+	const { userData, token, locals, cookies, userAgent, ip } = params;
 
 	// Microsoft Entra v1 tokens do not provide preferred_username, instead the username is provided in the upn
 	// claim. See https://learn.microsoft.com/en-us/entra/identity-platform/access-token-claims-reference
@@ -119,6 +124,12 @@ export async function updateUser(params: {
 
 	locals.sessionId = sessionId;
 
+	// Get cookie hash if coupling is enabled
+	const coupledCookieHash = await getCoupledCookieHash({ type: "svelte", value: cookies });
+
+	// Prepare OAuth token data for session storage
+	const oauthData = tokenSetToSessionOauth(token);
+
 	if (existingUser) {
 		// update existing user if any
 		await collections.users.updateOne(
@@ -137,6 +148,8 @@ export async function updateUser(params: {
 			userAgent,
 			ip,
 			expiresAt: addWeeks(new Date(), 2),
+			...(coupledCookieHash ? { coupledCookieHash } : {}),
+			...(oauthData ? { oauth: oauthData } : {}),
 		});
 	} else {
 		// user doesn't exist yet, create a new one
@@ -164,6 +177,8 @@ export async function updateUser(params: {
 			userAgent,
 			ip,
 			expiresAt: addWeeks(new Date(), 2),
+			...(coupledCookieHash ? { coupledCookieHash } : {}),
+			...(oauthData ? { oauth: oauthData } : {}),
 		});
 
 		// move pre-existing settings to new user
@@ -179,7 +194,6 @@ export async function updateUser(params: {
 			// if no settings found for user, create default settings
 			await collections.settings.insertOne({
 				userId,
-				ethicsModalAcceptedAt: new Date(),
 				updatedAt: new Date(),
 				createdAt: new Date(),
 				...DEFAULT_SETTINGS,

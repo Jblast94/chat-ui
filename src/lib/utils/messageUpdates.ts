@@ -2,56 +2,29 @@ import type { MessageFile } from "$lib/types/Message";
 import {
 	type MessageUpdate,
 	type MessageStreamUpdate,
-	type MessageToolCallUpdate,
-	MessageToolUpdateType,
-	MessageUpdateType,
 	type MessageToolUpdate,
-	type MessageWebSearchUpdate,
-	type MessageWebSearchGeneralUpdate,
-	type MessageWebSearchSourcesUpdate,
-	type MessageWebSearchErrorUpdate,
-	MessageWebSearchUpdateType,
-	type MessageToolErrorUpdate,
+	type MessageToolCallUpdate,
 	type MessageToolResultUpdate,
+	type MessageToolErrorUpdate,
+	type MessageToolProgressUpdate,
+	MessageUpdateType,
+	MessageToolUpdateType,
 } from "$lib/types/MessageUpdate";
 
 import { page } from "$app/state";
-
-export const isMessageWebSearchUpdate = (update: MessageUpdate): update is MessageWebSearchUpdate =>
-	update.type === MessageUpdateType.WebSearch;
-export const isMessageWebSearchGeneralUpdate = (
-	update: MessageUpdate
-): update is MessageWebSearchGeneralUpdate =>
-	isMessageWebSearchUpdate(update) && update.subtype === MessageWebSearchUpdateType.Update;
-export const isMessageWebSearchSourcesUpdate = (
-	update: MessageUpdate
-): update is MessageWebSearchSourcesUpdate =>
-	isMessageWebSearchUpdate(update) && update.subtype === MessageWebSearchUpdateType.Sources;
-export const isMessageWebSearchErrorUpdate = (
-	update: MessageUpdate
-): update is MessageWebSearchErrorUpdate =>
-	isMessageWebSearchUpdate(update) && update.subtype === MessageWebSearchUpdateType.Error;
-
-export const isMessageToolUpdate = (update: MessageUpdate): update is MessageToolUpdate =>
-	update.type === MessageUpdateType.Tool;
-export const isMessageToolCallUpdate = (update: MessageUpdate): update is MessageToolCallUpdate =>
-	isMessageToolUpdate(update) && update.subtype === MessageToolUpdateType.Call;
-export const isMessageToolResultUpdate = (
-	update: MessageUpdate
-): update is MessageToolResultUpdate =>
-	isMessageToolUpdate(update) && update.subtype === MessageToolUpdateType.Result;
-export const isMessageToolErrorUpdate = (update: MessageUpdate): update is MessageToolErrorUpdate =>
-	isMessageToolUpdate(update) && update.subtype === MessageToolUpdateType.Error;
+import type { KeyValuePair } from "$lib/types/Tool";
 
 type MessageUpdateRequestOptions = {
 	base: string;
 	inputs?: string;
 	messageId?: string;
 	isRetry: boolean;
-	isContinue: boolean;
-	webSearch: boolean;
-	tools?: Array<string>;
+	isContinue?: boolean;
 	files?: MessageFile[];
+	// Optional: pass selected MCP server names (client-side selection)
+	selectedMcpServerNames?: string[];
+	// Optional: pass selected MCP server configs (for custom client-defined servers)
+	selectedMcpServers?: Array<{ name: string; url: string; headers?: KeyValuePair[] }>;
 };
 export async function fetchMessageUpdates(
 	conversationId: string,
@@ -67,9 +40,10 @@ export async function fetchMessageUpdates(
 		inputs: opts.inputs,
 		id: opts.messageId,
 		is_retry: opts.isRetry,
-		is_continue: opts.isContinue,
-		web_search: opts.webSearch,
-		tools: opts.tools,
+		is_continue: Boolean(opts.isContinue),
+		// Will be ignored server-side if unsupported
+		selectedMcpServerNames: opts.selectedMcpServerNames,
+		selectedMcpServers: opts.selectedMcpServers,
 	});
 
 	opts.files?.forEach((file) => {
@@ -174,6 +148,16 @@ async function* streamMessageUpdatesToFullWords(
 
 	for await (const messageUpdate of iterator) {
 		if (messageUpdate.type !== "stream") {
+			// When a non-stream update (e.g. tool/status/final answer) arrives,
+			// flush any buffered stream tokens so the UI does not appear to
+			// "cut" mid-sentence while tools are running.
+			if (bufferedStreamUpdates.length > 0) {
+				yield {
+					type: MessageUpdateType.Stream,
+					token: bufferedStreamUpdates.map((u) => u.token).join(""),
+				};
+				bufferedStreamUpdates = [];
+			}
 			yield messageUpdate;
 			continue;
 		}
@@ -266,6 +250,26 @@ async function* smoothAsyncIterator<T>(iterator: AsyncGenerator<T>): AsyncGenera
 		yield valuesBuffer.shift()!;
 	}
 }
+
+// Tool update type guards for UI rendering
+export const isMessageToolUpdate = (update: MessageUpdate): update is MessageToolUpdate =>
+	update.type === MessageUpdateType.Tool;
+
+export const isMessageToolCallUpdate = (update: MessageUpdate): update is MessageToolCallUpdate =>
+	isMessageToolUpdate(update) && update.subtype === MessageToolUpdateType.Call;
+
+export const isMessageToolResultUpdate = (
+	update: MessageUpdate
+): update is MessageToolResultUpdate =>
+	isMessageToolUpdate(update) && update.subtype === MessageToolUpdateType.Result;
+
+export const isMessageToolErrorUpdate = (update: MessageUpdate): update is MessageToolErrorUpdate =>
+	isMessageToolUpdate(update) && update.subtype === MessageToolUpdateType.Error;
+
+export const isMessageToolProgressUpdate = (
+	update: MessageUpdate
+): update is MessageToolProgressUpdate =>
+	isMessageToolUpdate(update) && update.subtype === MessageToolUpdateType.Progress;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const waitForEvent = (eventTarget: EventTarget, eventName: string) =>

@@ -19,688 +19,214 @@ serviceAccount:
 ingress:
   path: "/chat"
   annotations:
-    alb.ingress.kubernetes.io/healthcheck-path: "/healthcheck"
+    alb.ingress.kubernetes.io/healthcheck-path: "/chat/healthcheck"
     alb.ingress.kubernetes.io/listen-ports: "[{\"HTTP\": 80}, {\"HTTPS\": 443}]"
-    alb.ingress.kubernetes.io/group.name: "hub-prod"
-    alb.ingress.kubernetes.io/scheme: "internet-facing"
+    alb.ingress.kubernetes.io/load-balancer-name: "hub-utils-prod-cloudfront"
+    alb.ingress.kubernetes.io/group.name: "hub-utils-prod-cloudfront"
+    alb.ingress.kubernetes.io/scheme: "internal"
     alb.ingress.kubernetes.io/ssl-redirect: "443"
     alb.ingress.kubernetes.io/tags: "Env=prod,Project=hub,Terraform=true"
-    alb.ingress.kubernetes.io/target-node-labels: "role-hub-utils=true"
+    alb.ingress.kubernetes.io/target-group-attributes: deregistration_delay.timeout_seconds=30
+    alb.ingress.kubernetes.io/target-type: "ip"
+    alb.ingress.kubernetes.io/certificate-arn: "arn:aws:acm:us-east-1:707930574880:certificate/5b25b145-75db-4837-b9f3-7f238ba8a9c7,arn:aws:acm:us-east-1:707930574880:certificate/bfdf509c-f44b-400f-b9e1-6f7a861abe91"
     kubernetes.io/ingress.class: "alb"
 
 ingressInternal:
   enabled: true
   path: "/chat"
   annotations:
-    alb.ingress.kubernetes.io/group.name: hub-prod-internal-public
-    alb.ingress.kubernetes.io/healthcheck-path: "/healthcheck"
+    alb.ingress.kubernetes.io/healthcheck-path: "/chat/healthcheck"
     alb.ingress.kubernetes.io/listen-ports: "[{\"HTTP\": 80}, {\"HTTPS\": 443}]"
-    alb.ingress.kubernetes.io/load-balancer-name: hub-prod-internal-public
+    alb.ingress.kubernetes.io/group.name: "hub-prod-internal-public"
+    alb.ingress.kubernetes.io/load-balancer-name: "hub-prod-internal-public"
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    alb.ingress.kubernetes.io/tags: "Env=prod,Project=hub,Terraform=true"
     alb.ingress.kubernetes.io/target-group-attributes: deregistration_delay.timeout_seconds=30
-    alb.ingress.kubernetes.io/target-node-labels: role-hub-lb=true
-    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/target-type: "ip"
+    alb.ingress.kubernetes.io/certificate-arn: "arn:aws:acm:us-east-1:707930574880:certificate/5b25b145-75db-4837-b9f3-7f238ba8a9c7,arn:aws:acm:us-east-1:707930574880:certificate/bfdf509c-f44b-400f-b9e1-6f7a861abe91"
     kubernetes.io/ingress.class: "alb"
 
 envVars:
-  ADDRESS_HEADER: 'X-Forwarded-For'
-  ADMIN_CLI_LOGIN: "false"
-  ALTERNATIVE_REDIRECT_URLS: '["huggingchat://login/callback"]'
+  COUPLE_SESSION_WITH_COOKIE_NAME: "token"
+  OPENID_SCOPES: "openid profile inference-api read-mcp read-billing"
+  USE_USER_TOKEN: "true"
+  MCP_FORWARD_HF_USER_TOKEN: "true"
+  AUTOMATIC_LOGIN: "false"
+
+  ADDRESS_HEADER: "X-Forwarded-For"
   APP_BASE: "/chat"
   ALLOW_IFRAME: "false"
-  COMMUNITY_TOOLS: "true"
   COOKIE_SAMESITE: "lax"
   COOKIE_SECURE: "true"
-  ENABLE_ASSISTANTS: "true"
-  ENABLE_ASSISTANTS_RAG: "true"
-  ENABLE_CONFIG_MANAGER: "false"
-  METRICS_PORT: 5565
-  LOG_LEVEL: "debug"
+  EXPOSE_API: "true"
   METRICS_ENABLED: "true"
-  MODELS: >
-    [
-      {
-        "name": "meta-llama/Llama-3.3-70B-Instruct",
-        "id": "meta-llama/Llama-3.3-70B-Instruct",
-        "description": "Ideal for everyday use. A fast and extremely capable model matching closed source models' capabilities. Now with the latest Llama 3.3 weights!",
-        "modelUrl": "https://huggingface.co/meta-llama/Llama-3.3-70B-Instruct",
-        "websiteUrl": "https://llama.meta.com/",
-        "logoUrl": "https://huggingface.co/datasets/huggingchat/models-logo/resolve/main/meta-logo.png",
-        "tools": true,
-        "preprompt": "",
-        "parameters": {
-          "stop": ["<|endoftext|>", "<|eot_id|>"],
-          "temperature": 0.6,
-          "max_new_tokens": 1024,
-          "truncate": 7167
-        },
-        "endpoints": [{"type" : "inference-client"}],
-        "promptExamples": [
-          {
-            "title": "Write an email",
-            "prompt": "As a restaurant owner, write a professional email to the supplier to get these products every week: \n\n- Wine (x10)\n- Eggs (x24)\n- Bread (x12)"
-          },
-          {
-            "title": "Code a game",
-            "prompt": "Code a basic snake game in python, give explanations for each step."
-          },
-          {
-            "title": "Recipe help",
-            "prompt": "How do I make a delicious lemon cheesecake?"
-          }
-        ]
-      },
-      {
-        "name": "Qwen/Qwen3-235B-A22B",
-        "description": "Qwen's flagship model featuring optional reasoning. Exceptional performance with benchmarks rivaling R1 and o1.",
-        "modelUrl": "https://huggingface.co/Qwen/Qwen3-235B-A22B",
-        "websiteUrl": "https://qwenlm.github.io/blog/qwen3/",
-        "logoUrl": "https://huggingface.co/datasets/huggingchat/models-logo/resolve/main/qwen-logo.png",
-        "preprompt": "You are Qwen, created by Alibaba Cloud. You are a helpful assistant.",
-        "reasoning": {
-          "type": "tokens",
-          "beginToken": "<think>",
-          "endToken": "</think>"
-        },
-        "parameters": {
-          "stop": ["<|endoftext|>", "<|im_end|>"],
-          "temperature": 0.6,
-        },
-        "tools": true,
-        "promptExamples": [
-          {
-            "title": "Write an email",
-            "prompt": "As a restaurant owner, write a professional email to the supplier to get these products every week: \n\n- Wine (x10)\n- Eggs (x24)\n- Bread (x12) /nothink"
-          },
-          {
-            "title": "Build a website",
-            "prompt": "Generate a snazzy static landing page for a local coffee shop using HTML and CSS. You can use tailwind using <script src='https://cdn.tailwindcss.com'></script>."
-          },
-          {
-            "title": "Larger number",
-            "prompt": "9.11 or 9.9 which number is larger?"
-          },
-        ],
-        "endpoints": [
-          {
-            "type": "inference-client",
-            "baseURL": "https://api-inference.endpoints.huggingface.tech/models/Qwen/Qwen3-235B-A22B/v1"
-          }
-        ]
-      },
-      {
-        "name": "Qwen/Qwen2.5-72B-Instruct",
-        "description": "The latest Qwen open model with improved role-playing, long text generation and structured data understanding.",
-        "modelUrl": "https://huggingface.co/Qwen/Qwen2.5-72B-Instruct",
-        "websiteUrl": "https://qwenlm.github.io/blog/qwen2.5/",
-        "logoUrl": "https://huggingface.co/datasets/huggingchat/models-logo/resolve/main/qwen-logo.png",
-        "preprompt": "You are Qwen, created by Alibaba Cloud. You are a helpful assistant.",
-        "parameters": {
-          "stop": ["<|endoftext|>", "<|im_end|>"],
-          "temperature": 0.6,
-          "truncate": 28672,
-          "max_new_tokens": 3072
-        },
-        "tools": true,
-        "endpoints": [{"type" : "inference-client"}],
-        "promptExamples": [
-          {
-            "title": "Write an email",
-            "prompt": "As a restaurant owner, write a professional email to the supplier to get these products every week: \n\n- Wine (x10)\n- Eggs (x24)\n- Bread (x12)"
-          },
-          {
-            "title": "Code a game",
-            "prompt": "Code a basic snake game in python, give explanations for each step."
-          },
-          {
-            "title": "Recipe help",
-            "prompt": "How do I make a delicious lemon cheesecake?"
-          }
-        ]
-      },
-      {
-        "name": "CohereLabs/c4ai-command-r-plus-08-2024",
-        "description": "Cohere's largest language model, optimized for conversational interaction and tool use. Now with the 2024 update!",
-        "modelUrl": "https://huggingface.co/CohereLabs/c4ai-command-r-plus-08-2024",
-        "websiteUrl": "https://docs.cohere.com/docs/command-r-plus",
-        "logoUrl": "https://huggingface.co/datasets/huggingchat/models-logo/resolve/main/cohere-logo.png",
-        "tools": true,
-        "systemRoleSupported": false,
-        "parameters": {
-          "stop": ["<|END_OF_TURN_TOKEN|>", "<|im_end|>"],
-          "truncate": 28672,
-          "max_new_tokens": 2048,
-          "temperature": 0.3
-        },
-        "endpoints": [{"type" : "inference-client"}],
-        "promptExamples": [
-          {
-            "title": "Generate image",
-            "prompt": "Generate the portrait of a scientific mouse in its laboratory."
-          },
-          {
-            "title": "Review code",
-            "prompt": "Review this pull request: https://github.com/huggingface/chat-ui/pull/1131/files"
-          },
-          {
-            "title": "Code a game",
-            "prompt": "Code a basic snake game in python, give explanations for each step."
-          }
-        ]
-      },
-      {
-        "name": "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
-        "modelUrl": "https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
-        "websiteUrl": "https://deepseek.com/",
-        "logoUrl": "https://huggingface.co/datasets/huggingchat/models-logo/resolve/main/deepseek-logo.png",
-        "description": "The first reasoning model from DeepSeek, distilled into a 32B dense model. Outperforms o1-mini on multiple benchmarks.",
-        "reasoning": {
-          "type": "tokens",
-          "beginToken": "",
-          "endToken": "</think>"
-        },
-        "tools": true,
-        "promptExamples": [
-          {
-            "title": "Rs in strawberry",
-            "prompt": "how many R in strawberry?"
-          },
-          {
-            "title": "Larger number",
-            "prompt": "9.11 or 9.9 which number is larger?"
-          },
-          {
-            "title": "Measuring 6 liters",
-            "prompt": "I have a 6- and a 12-liter jug. I want to measure exactly 6 liters."
-          }
-        ],
-        "endpoints": [
-          {
-            "type": "inference-client",
-            "baseURL": "https://b8xf586h164t4vk7.us-east-1.aws.endpoints.huggingface.cloud/v1"
-          }
-        ]
-      },
-      {
-        "name": "nvidia/Llama-3.1-Nemotron-70B-Instruct-HF",
-        "modelUrl": "https://huggingface.co/nvidia/Llama-3.1-Nemotron-70B-Instruct-HF",
-        "websiteUrl": "https://www.nvidia.com/",
-        "logoUrl": "https://huggingface.co/datasets/huggingchat/models-logo/resolve/main/nvidia-logo.png",
-        "description": "Nvidia's latest Llama fine-tune, topping alignment benchmarks and optimized for instruction following.",
-        "parameters": {
-          "stop": ["<|eot_id|>", "<|im_end|>"],
-          "temperature": 0.5,
-          "truncate": 28672,
-          "max_new_tokens": 2048
-        },
-        "promptExamples": [
-          {
-            "title": "Rs in strawberry",
-            "prompt": "how many R in strawberry?"
-          },
-          {
-            "title": "Larger number",
-            "prompt": "9.11 or 9.9 which number is larger?"
-          },
-          {
-            "title": "Measuring 6 liters",
-            "prompt": "I have a 6- and a 12-liter jug. I want to measure exactly 6 liters."
-          }
-        ],
-        "endpoints": [
-          {
-            "type": "inference-client",
-            "baseURL": "https://api-inference.endpoints.huggingface.tech/models/nvidia/Llama-3.1-Nemotron-70B-Instruct-HF/v1"
-          }
-        ]
-      },
-      {
-        "name": "Qwen/QwQ-32B",
-        "tools": true,
-        "preprompt": "You are a helpful and harmless assistant. You are Qwen developed by Alibaba. You should think step-by-step.",
-        "modelUrl": "https://huggingface.co/Qwen/QwQ-32B",
-        "websiteUrl": "https://qwenlm.github.io/blog/qwq-32b/",
-        "logoUrl": "https://huggingface.co/datasets/huggingchat/models-logo/resolve/main/qwen-logo.png",
-        "description": "QwQ is the latest reasoning model released by the Qwen team, approaching the capabilities of R1 in benchmarks.",
-        "reasoning": {
-          "type": "tokens",
-          "beginToken": "",
-          "endToken": "</think>"
-        },
-        "promptExamples": [
-          {
-            "title": "Rs in strawberry",
-            "prompt": "how many R in strawberry?"
-          },
-          {
-            "title": "Larger number",
-            "prompt": "9.11 or 9.9 which number is larger?"
-          },
-          {
-            "title": "Measuring 6 liters",
-            "prompt": "I have a 6- and a 12-liter jug. I want to measure exactly 6 liters."
-          }
-        ],
-        "endpoints": [
-          {
-            "type": "inference-client",
-          }
-        ]
-      },
-      {
-        "name": "google/gemma-3-27b-it",
-        "logoUrl": "https://huggingface.co/datasets/huggingchat/models-logo/resolve/main/google-logo.png",
-        "multimodal": true,
-        "tools": true,
-        "systemRoleSupported" : false,
-        "description": "Google's latest open model with great multilingual performance, supports image inputs natively.",
-        "websiteUrl": "https://blog.google/technology/developers/gemma-3/",
-        "promptExamples": [
-          {
-            "title": "Write an email",
-            "prompt": "As a restaurant owner, write a professional email to the supplier to get these products every week: \n\n- Wine (x10)\n- Eggs (x24)\n- Bread (x12)"
-          },
-          {
-            "title": "Code a game",
-            "prompt": "Code a basic snake game in python, give explanations for each step."
-          },
-          {
-            "title": "Recipe help",
-            "prompt": "How do I make a delicious lemon cheesecake?"
-          }
-        ],
-        "endpoints": [
-          {
-            "type": "inference-client",
-            "baseURL": "https://wp0d3hn6s3k8jk22.us-east-1.aws.endpoints.huggingface.cloud/v1",
-            "multimodal": {
-              "image": {
-                "maxSizeInMB": 10,
-                "maxWidth": 560,
-                "maxHeight": 560,
-                "supportedMimeTypes": ["image/jpeg", "image/png", "image/webp"],
-                "preferredMimeType": "image/webp"
-              }
-            }
-          }
-        ]
-      },
-      {
-        "name": "mistralai/Mistral-Small-3.1-24B-Instruct-2503",
-        "tools": true,
-        "displayName": "mistralai/Mistral-Small-3.1-24B-Instruct-2503",
-        "description": "A small model with good capabilities in language understanding and commonsense reasoning.",
-        "logoUrl": "https://huggingface.co/datasets/huggingchat/models-logo/resolve/main/mistral-logo.png",
-        "websiteUrl": "https://mistral.ai/news/mistral-nemo/",
-        "modelUrl": "https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503",
-        "preprompt": "",
-        "promptExamples": [
-          {
-            "title": "Write an email",
-            "prompt": "As a restaurant owner, write a professional email to the supplier to get these products every week: \n\n- Wine (x10)\n- Eggs (x24)\n- Bread (x12)"
-          },
-          {
-            "title": "Code a game",
-            "prompt": "Code a basic snake game in python, give explanations for each step."
-          },
-          {
-            "title": "Recipe help",
-            "prompt": "How do I make a delicious lemon cheesecake?"
-          }
-        ],
+  LOG_LEVEL: "debug"
+  NODE_LOG_STRUCTURED_DATA: "true"
 
-        "endpoints": [
-          {
-            "type": "inference-client",
-              "baseURL": "https://hkjfqcryevvq9cie.us-east-1.aws.endpoints.huggingface.cloud/v1"
-          }
-        ]
-      },
-      {
-        "name": "Qwen/Qwen2.5-VL-32B-Instruct",
-        "logoUrl": "https://huggingface.co/datasets/huggingchat/models-logo/resolve/main/qwen-logo.png",
-        "description": "The latest multimodal model from Qwen! Supports image inputs natively.",
-        "websiteUrl": "https://qwenlm.github.io/blog/qwen2.5-vl/",
-        "modelUrl": "https://huggingface.co/Qwen/Qwen2.5-VL-32B-Instruct",
-        "multimodal": true,
-        "promptExamples": [
-          {
-            "title": "Write an email",
-            "prompt": "As a restaurant owner, write a professional email to the supplier to get these products every week: \n\n- Wine (x10)\n- Eggs (x24)\n- Bread (x12)"
-          },
-          {
-            "title": "Code a game",
-            "prompt": "Code a basic snake game in python, give explanations for each step."
-          },
-          {
-            "title": "Recipe help",
-            "prompt": "How do I make a delicious lemon cheesecake?"
-          }
-        ],
-        "endpoints": [
-          {
-            "type": "inference-client",
-            "multimodal": {
-              "image": {
-                "maxSizeInMB": 10,
-                "maxWidth": 1024,
-                "maxHeight": 1024,
-                "supportedMimeTypes": ["image/png", "image/jpeg", "image/webp"],
-                "preferredMimeType": "image/webp"
-              }
-            }
-          }
-        ]
-      },
-      {
-        "name": "microsoft/Phi-4",
-        "tools": true,
-        "systemRoleSupported": false,
-        "description": "One of the best small models, super fast for simple tasks.",
-        "logoUrl": "https://huggingface.co/datasets/huggingchat/models-logo/resolve/main/microsoft-logo.png",
-        "modelUrl": "https://huggingface.co/microsoft/Phi-4",
-        "websiteUrl": "https://techcommunity.microsoft.com/blog/aiplatformblog/introducing-phi-4-microsoft%E2%80%99s-newest-small-language-model-specializing-in-comple/4357090",
-        "preprompt": "",
-        "parameters": {
-          "stop": ["<|end|>", "<|endoftext|>", "<|assistant|>"],
-          "temperature": 0.6,
-          "truncate": 28672,
-          "max_new_tokens": 3072
-        },
-        "promptExamples": [
-          {
-            "title": "Write an email",
-            "prompt": "As a restaurant owner, write a professional email to the supplier to get these products every week: \n\n- Wine (x10)\n- Eggs (x24)\n- Bread (x12)"
-          },
-          {
-            "title": "Code a game",
-            "prompt": "Code a basic snake game in python, give explanations for each step."
-          },
-          {
-            "title": "Recipe help",
-            "prompt": "How do I make a delicious lemon cheesecake?"
-          }
-        ],
-        "endpoints": [
-          {
-            "type": "inference-client",
-            "baseURL": "https://up5ijetg6a2e9zlb.us-east-1.aws.endpoints.huggingface.cloud/v1"
-          }
-        ]
-      },
-      {
-        "name": "NousResearch/Hermes-3-Llama-3.1-8B",
-        "description": "Nous Research's latest Hermes 3 release in 8B size. Follows instruction closely.",
-        "tools": true,
-        "logoUrl": "https://huggingface.co/datasets/huggingchat/models-logo/resolve/main/nous-logo.png",
-        "websiteUrl": "https://nousresearch.com/",
-        "modelUrl": "https://huggingface.co/NousResearch/Hermes-3-Llama-3.1-8B",
-        "promptExamples": [
-          {
-            "title": "Write an email",
-            "prompt": "As a restaurant owner, write a professional email to the supplier to get these products every week: \n\n- Wine (x10)\n- Eggs (x24)\n- Bread (x12)"
-          },
-          {
-            "title": "Code a game",
-            "prompt": "Code a basic snake game in python, give explanations for each step."
-          },
-          {
-            "title": "Recipe help",
-            "prompt": "How do I make a delicious lemon cheesecake?"
-          }
-        ],
-        "parameters": {
-          "stop": ["<|im_end|>"],
-          "temperature": 0.6,
-          "truncate": 14336,
-          "max_new_tokens": 1536
-        },
-        "endpoints": [{"type" : "inference-client"}]
-      }
-    ]
-
-  NODE_ENV: "prod"
-  NODE_LOG_STRUCTURED_DATA: true
-  OLD_MODELS: >
-    [
-      { "name": "bigcode/starcoder" },
-      { "name": "OpenAssistant/oasst-sft-6-llama-30b-xor" },
-      { "name": "HuggingFaceH4/zephyr-7b-alpha" },
-      { "name": "openchat/openchat_3.5" },
-      { "name": "openchat/openchat-3.5-1210" },
-      { "name": "tiiuae/falcon-180B-chat" },
-      { "name": "codellama/CodeLlama-34b-Instruct-hf" },
-      { "name": "google/gemma-7b-it" },
-      { "name": "meta-llama/Llama-2-70b-chat-hf" },
-      { "name": "codellama/CodeLlama-70b-Instruct-hf" },
-      { "name": "openchat/openchat-3.5-0106" },
-      { "name": "meta-llama/Meta-Llama-3-70B-Instruct" },
-      { "name": "meta-llama/Meta-Llama-3.1-405B-Instruct-FP8" },
-      {
-        "name": "CohereForAI/c4ai-command-r-plus-08-2024",
-        "transferTo": "CohereLabs/c4ai-command-r-plus-08-2024"
-      },
-      {
-        "name": "CohereForAI/c4ai-command-r-plus",
-        "transferTo": "CohereLabs/c4ai-command-r-plus-08-2024"
-      },
-      {
-        "name": "01-ai/Yi-1.5-34B-Chat",
-        "transferTo": "CohereLabs/c4ai-command-r-plus-08-2024"
-      },
-      {
-        "name": "mistralai/Mixtral-8x7B-Instruct-v0.1",
-        "transferTo": "mistralai/Mistral-Small-3.1-24B-Instruct-2503"
-      },
-      {
-        "name": "NousResearch/Nous-Hermes-2-Mixtral-8x7B-DPO",
-        "transferTo": "NousResearch/Hermes-3-Llama-3.1-8B"
-      },
-      {
-        "name": "mistralai/Mistral-7B-Instruct-v0.3",
-        "transferTo": "mistralai/Mistral-Small-3.1-24B-Instruct-2503"
-      },
-      {
-        "name": "microsoft/Phi-3-mini-4k-instruct",
-        "transferTo": "microsoft/Phi-4"
-      },
-      {
-        "name": "meta-llama/Meta-Llama-3.1-70B-Instruct",
-        "transferTo": "meta-llama/Llama-3.3-70B-Instruct"
-      },
-      {
-        "name": "Qwen/QwQ-32B-Preview",
-        "transferTo": "Qwen/QwQ-32B"
-      },
-      {
-        "name": "mistralai/Mistral-Nemo-Instruct-2407",
-        "transferTo": "mistralai/Mistral-Small-3.1-24B-Instruct-2503"
-      },
-      {
-        "name": "microsoft/Phi-3.5-mini-instruct",
-        "transferTo": "microsoft/Phi-4"
-      },
-      {
-        "name": "Qwen/Qwen2.5-Coder-32B-Instruct",
-        "transferTo": "Qwen/QwQ-32B"
-      },
-      {
-        "name": "meta-llama/Llama-3.2-11B-Vision-Instruct",
-        "transferTo" : "Qwen/Qwen2.5-VL-32B-Instruct"
-      }
-    ]
-  PUBLIC_ORIGIN: "https://huggingface.co"
-  PUBLIC_SHARE_PREFIX: "https://hf.co/chat"
-  PUBLIC_ANNOUNCEMENT_BANNERS: >
-    [
-      {
-        "title": "Qwen 3 235B is available!",
-        "linkTitle": "Try it out!",
-        "linkHref": "https://huggingface.co/chat/models/Qwen/Qwen3-235B-A22B"
-      }
-    ]
-  PUBLIC_APP_NAME: "HuggingChat"
+  OPENAI_BASE_URL: "https://router.huggingface.co/v1"
   PUBLIC_APP_ASSETS: "huggingchat"
-  PUBLIC_APP_COLOR: "yellow"
-  PUBLIC_APP_DESCRIPTION: "Making the community's best AI chat models available to everyone."
-  PUBLIC_APP_DISCLAIMER_MESSAGE: "Disclaimer: AI is an area of active research with known problems such as biased generation and misinformation. Do not use this application for high-stakes decisions or advice."
-  PUBLIC_APP_GUEST_MESSAGE: "Sign in with a free Hugging Face account to continue using HuggingChat."
-  PUBLIC_APP_DATA_SHARING: 0
-  PUBLIC_APP_DISCLAIMER: 1
-  PUBLIC_PLAUSIBLE_SCRIPT_URL: "/js/script.js"
-  REQUIRE_FEATURED_ASSISTANTS: "true"
-  TASK_MODEL: >
-        {
-        "name": "NousResearch/Hermes-3-Llama-3.1-8B",
-        "unlisted": true,
-        "endpoints": [{"type" : "inference-client"}],
-        "parameters": {
-          "temperature": 0.1,
-          "max_new_tokens": 256
-        }
-        }
+  PUBLIC_APP_NAME: "HuggingChat"
+  PUBLIC_APP_DESCRIPTION: "Making the community's best AI chat models available to everyone"
+  PUBLIC_ORIGIN: "https://huggingface.co"
+  PUBLIC_PLAUSIBLE_SCRIPT_URL: "https://plausible.io/js/pa-Io_oigECawqdlgpf5qvHb.js"
 
-
-  TEXT_EMBEDDING_MODELS: >
-    [{
-      "name": "bge-base-en-v1-5-sxa",
-      "displayName": "bge-base-en-v1-5-sxa",
-      "chunkCharLength": 512,
-      "endpoints": [{
-        "type": "tei",
-        "url": "https://huggingchat-tei.hf.space/"
-      }]
-    }]
-  WEBSEARCH_BLOCKLIST: '["youtube.com", "twitter.com"]'
-  XFF_DEPTH: '2'
-  TOOLS: >
+  TASK_MODEL: "Qwen/Qwen3-4B-Instruct-2507"
+  LLM_ROUTER_ARCH_BASE_URL: "https://router.huggingface.co/v1"
+  LLM_ROUTER_ROUTES_PATH: "build/client/chat/huggingchat/routes.chat.json"
+  LLM_ROUTER_ARCH_MODEL: "katanemo/Arch-Router-1.5B"
+  LLM_ROUTER_OTHER_ROUTE: "casual_conversation"
+  LLM_ROUTER_ARCH_TIMEOUT_MS: "10000"
+  LLM_ROUTER_ENABLE_MULTIMODAL: "true"
+  LLM_ROUTER_MULTIMODAL_MODEL: "Qwen/Qwen3-VL-235B-A22B-Instruct"
+  LLM_ROUTER_ENABLE_TOOLS: "true"
+  LLM_ROUTER_TOOLS_MODEL: "moonshotai/Kimi-K2-Instruct-0905"
+  TRANSCRIPTION_MODEL: "openai/whisper-large-v3-turbo"
+  MCP_SERVERS: >
+    [{"name": "Web Search (Exa)", "url": "https://mcp.exa.ai/mcp"}, {"name": "Hugging Face", "url": "https://hf.co/mcp?login"}]
+  PUBLIC_LLM_ROUTER_DISPLAY_NAME: "Omni"
+  PUBLIC_LLM_ROUTER_LOGO_URL: "https://cdn-uploads.huggingface.co/production/uploads/5f17f0a0925b9863e28ad517/C5V0v1xZXv6M7FXsdJH9b.png"
+  PUBLIC_LLM_ROUTER_ALIAS_ID: "omni"
+  MODELS: > 
     [
-      {
-        "_id": "000000000000000000000001",
-        "displayName": "Image Generation",
-        "description": "Use this tool to generate images based on a prompt.",
-        "color": "yellow",
-        "icon": "camera",
-        "baseUrl": "black-forest-labs/FLUX.1-schnell",
-        "name": "image_generation",
-        "endpoint": "/infer",
-        "inputs": [
-          {
-            "name": "prompt",
-            "description": "A prompt to generate an image from",
-            "paramType": "required",
-            "type": "str"
-          },
-          { "name": "seed", "paramType": "fixed", "value": "0", "type": "float" },
-          {
-            "name": "randomize_seed",
-            "paramType": "fixed",
-            "value": "true",
-            "type": "bool"
-          },
-          {
-            "name": "width",
-            "description": "numeric value between 256 and 2048",
-            "paramType": "optional",
-            "default": 1024,
-            "type": "float"
-          },
-          {
-            "name": "height",
-            "description": "numeric value between 256 and 2048",
-            "paramType": "optional",
-            "default": 1024,
-            "type": "float"
-          },
-          {
-            "name": "num_inference_steps",
-            "paramType": "fixed",
-            "value": "4",
-            "type": "float"
-          }
-        ],
-        "outputComponent": "image",
-        "outputComponentIdx": 0,
-        "showOutput": true
-      },
-      {
-        "_id": "000000000000000000000002",
-        "displayName": "Document Parser",
-        "description": "Use this tool to parse any document and get its content in markdown format.",
-        "color": "yellow",
-        "icon": "cloud",
-        "baseUrl": "huggingchat/document-parser",
-        "name": "document_parser",
-        "endpoint": "/predict",
-        "inputs": [
-          {
-            "name": "document",
-            "description": "Filename of the document to parse",
-            "paramType": "required",
-            "type": "file",
-            "mimeTypes": 'application/*'
-          },
-          {
-            "name": "filename",
-            "paramType": "fixed",
-            "value": "document.pdf",
-            "type": "str"
-          }
-        ],
-        "outputComponent": "textbox",
-        "outputComponentIdx": 0,
-        "showOutput": false,
-        "isHidden": true
-      },
-      {
-        "_id": "000000000000000000000003",
-        "name": "edit_image",
-        "baseUrl": "multimodalart/cosxl",
-        "endpoint": "/run_edit",
-        "inputs": [
-          {
-            "name": "image",
-            "description": "The image path to be edited",
-            "paramType": "required",
-            "type": "file",
-            "mimeTypes": 'image/*'
-          },
-          {
-            "name": "prompt",
-            "description": "The prompt with which to edit the image",
-            "paramType": "required",
-            "type": "str"
-          },
-          {
-            "name": "negative_prompt",
-            "paramType": "fixed",
-            "value": "",
-            "type": "str"
-          },
-          {
-            "name": "guidance_scale",
-            "paramType": "fixed",
-            "value": 6.5,
-            "type": "float"
-          },
-          {
-            "name": "steps",
-            "paramType": "fixed",
-            "value": 30,
-            "type": "float"
-          }
-        ],
-        "outputComponent": "image",
-        "showOutput": true,
-        "displayName": "Image Editor",
-        "color": "green",
-        "icon": "camera",
-        "description": "This tool lets you edit images",
-        "outputComponentIdx": 0
-      }
+      { "id": "dicta-il/DictaLM-3.0-24B-Thinking", "description": "Hebrew-English reasoning model with explicit thinking traces for bilingual QA and logic." },
+      { "id": "EssentialAI/rnj-1-instruct", "description": "8B code and STEM model rivaling larger models on agentic coding, math, and tool use." },
+      { "id": "MiniMaxAI/MiniMax-M2", "description": "Compact MoE model tuned for fast coding, agentic workflows, and long-context chat." },
+      { "id": "PrimeIntellect/INTELLECT-3-FP8", "description": "FP8 INTELLECT-3 variant for cheaper frontier-level math, code, and general reasoning." },
+      { "id": "Qwen/Qwen3-VL-30B-A3B-Instruct", "description": "Flagship Qwen3 vision-language model for high-accuracy image, text, and video reasoning." },
+      { "id": "Qwen/Qwen3-VL-30B-A3B-Thinking", "description": "Thinking-mode Qwen3-VL that emits detailed multimodal reasoning traces for difficult problems." },
+      { "id": "Qwen/Qwen3-VL-8B-Instruct", "description": "Smaller Qwen3 vision-language assistant for everyday multimodal chat, captioning, and analysis." },
+      { "id": "aisingapore/Qwen-SEA-LION-v4-32B-IT", "description": "SEA-LION v4 Qwen optimized for Southeast Asian languages and regional enterprise workloads." },
+      { "id": "allenai/Olmo-3-32B-Think", "description": "Fully open 32B thinking model excelling at stepwise math, coding, and research reasoning." },
+      { "id": "allenai/Olmo-3-7B-Instruct", "description": "Lightweight Olmo assistant for instruction following, Q&A, and everyday open-source workflows." },
+      { "id": "allenai/Olmo-3-7B-Think", "description": "7B Olmo reasoning model delivering transparent multi-step thinking on modest hardware." },
+      { "id": "deepcogito/cogito-671b-v2.1", "description": "Frontier-scale 671B MoE focused on deep reasoning, math proofs, and complex coding." },
+      { "id": "deepcogito/cogito-671b-v2.1-FP8", "description": "FP8 Cogito v2.1 making 671B-scale reasoning more affordable to serve and experiment with." },
+      { "id": "deepseek-ai/DeepSeek-V3.2", "description": "Latest DeepSeek agent model combining strong reasoning, tool-use, and efficient long-context inference." },
+      { "id": "moonshotai/Kimi-K2-Thinking", "description": "Reasoning-focused Kimi K2 variant for deep chain-of-thought and large agentic tool flows." },
+      { "id": "nvidia/NVIDIA-Nemotron-Nano-12B-v2", "description": "NVIDIA Nano 12B general assistant for coding, chat, and agents with efficient deployment." },
+      { "id": "ServiceNow-AI/Apriel-1.6-15b-Thinker", "description": "15B multimodal reasoning model with efficient thinking for enterprise and coding tasks." },
+      { "id": "openai/gpt-oss-safeguard-20b", "description": "Safety-focused gpt-oss variant for content classification, policy enforcement, and LLM output filtering." },
+      { "id": "zai-org/GLM-4.5", "description": "Flagship GLM agent model unifying advanced reasoning, coding, and tool-using capabilities." },
+      { "id": "zai-org/GLM-4.5V-FP8", "description": "FP8 vision-language GLM-4.5V for efficient multilingual visual QA, understanding, and hybrid reasoning." },    
+      { "id": "deepseek-ai/DeepSeek-V3.2-Exp", "description": "Experimental V3.2 release focused on faster, lower-cost inference with strong general reasoning and tool use." },
+      { "id": "zai-org/GLM-4.6", "description": "Next-gen GLM with very long context and solid multilingual reasoning; good for agents and tools." },
+      { "id": "Kwaipilot/KAT-Dev", "description": "Developer-oriented assistant tuned for coding, debugging, and lightweight agent workflows." },
+      { "id": "Qwen/Qwen3-VL-235B-A22B-Instruct", "description": "Flagship multimodal Qwen (text+image) instruction model for high-accuracy visual reasoning and detailed explanations." },
+      { "id": "deepseek-ai/DeepSeek-V3.1-Terminus", "description": "Refined V3.1 variant optimized for reliability on long contexts, structured outputs, and tool use." },
+      { "id": "Qwen/Qwen3-VL-235B-A22B-Thinking", "description": "Deliberative multimodal Qwen that can produce step-wise visual+text reasoning traces for complex tasks." },
+      { "id": "zai-org/GLM-4.6-FP8", "description": "FP8-optimized GLM-4.6 for faster/cheaper deployment with near-parity quality on most tasks." },
+      { "id": "zai-org/GLM-4.6V", "description": "106B vision-language model with 128K context and native tool calling for multimodal agents.", "parameters": { "max_tokens": 8192 } },
+      { "id": "zai-org/GLM-4.6V-Flash", "description": "9B lightweight vision model for fast local inference with tool calling and UI understanding." },
+      { "id": "zai-org/GLM-4.6V-FP8", "description": "FP8-quantized GLM-4.6V for efficient multimodal deployment with native tool use." },
+      { "id": "Qwen/Qwen3-235B-A22B-Thinking-2507", "description": "Deliberative text-only 235B Qwen variant for transparent, step-by-step reasoning on hard problems." },
+      { "id": "Qwen/Qwen3-Next-80B-A3B-Instruct", "description": "Instruction tuned Qwen for multilingual reasoning, coding, long contexts." },
+      { "id": "Qwen/Qwen3-Next-80B-A3B-Thinking", "description": "Thinking mode Qwen that outputs explicit step by step reasoning." },
+      { "id": "moonshotai/Kimi-K2-Instruct-0905", "description": "Instruction MoE strong coding and multi step reasoning, long context." },
+      { "id": "openai/gpt-oss-20b", "description": "Efficient open model for reasoning and tool use, runs locally." },
+      { "id": "swiss-ai/Apertus-8B-Instruct-2509", "description": "Open, multilingual, trained on compliant data transparent global assistant." },
+      { "id": "openai/gpt-oss-120b", "description": "High performing open model suitable for large scale applications." },
+      { "id": "Qwen/Qwen3-Coder-30B-A3B-Instruct", "description": "Code specialized Qwen long context strong generation and function calling." },
+      { "id": "meta-llama/Llama-3.1-8B-Instruct", "description": "Instruction tuned Llama efficient conversational assistant with improved alignment." },
+      { "id": "Qwen/Qwen2.5-VL-7B-Instruct", "description": "Vision language Qwen handles images and text for basic multimodal tasks." },
+      { "id": "Qwen/Qwen3-30B-A3B-Instruct-2507", "description": "Instruction tuned Qwen reliable general tasks with long context support." },
+      { "id": "baidu/ERNIE-4.5-VL-28B-A3B-PT", "description": "Baidu multimodal MoE strong at complex vision language reasoning." },
+      { "id": "baidu/ERNIE-4.5-0.3B-PT", "description": "Tiny efficient Baidu model surprisingly long context for lightweight chat." },
+      { "id": "deepseek-ai/DeepSeek-R1", "description": "MoE reasoning model excels at math, logic, coding with steps." },
+      { "id": "baidu/ERNIE-4.5-21B-A3B-PT", "description": "Efficient Baidu MoE competitive generation with fewer active parameters." },
+      { "id": "swiss-ai/Apertus-70B-Instruct-2509", "description": "Open multilingual model trained on open data transparent and capable." },
+      { "id": "Qwen/Qwen3-4B-Instruct-2507", "description": "Compact instruction Qwen great for lightweight assistants and apps." },
+      { "id": "meta-llama/Llama-3.2-3B-Instruct", "description": "Small efficient Llama for basic conversations and instructions." },
+      { "id": "Qwen/Qwen3-Coder-480B-A35B-Instruct", "description": "Huge Qwen coder repository scale understanding and advanced generation." },
+      { "id": "meta-llama/Meta-Llama-3-8B-Instruct", "description": "Aligned, efficient Llama dependable open source assistant tasks." },
+      { "id": "Qwen/Qwen3-4B-Thinking-2507", "description": "Small Qwen that emits transparent step by step reasoning." },
+      { "id": "moonshotai/Kimi-K2-Instruct", "description": "MoE assistant strong coding, reasoning, agentic tasks, long context." },
+      { "id": "zai-org/GLM-4.5V", "description": "Vision language MoE state of the art multimodal reasoning." },
+      { "id": "zai-org/GLM-4.6", "description": "Hybrid reasoning model top choice for intelligent agent applications." },
+      { "id": "deepseek-ai/DeepSeek-V3.1", "description": "Supports direct and thinking style reasoning within one model." },
+      { "id": "Qwen/Qwen3-8B", "description": "Efficient Qwen assistant strong multilingual skills and formatting." },
+      { "id": "Qwen/Qwen3-30B-A3B-Thinking-2507", "description": "Thinking mode Qwen explicit reasoning for complex interpretable tasks." },
+      { "id": "google/gemma-3-27b-it", "description": "Multimodal Gemma long context strong text and image understanding." },
+      { "id": "zai-org/GLM-4.5-Air", "description": "Efficient GLM strong reasoning and tool use at lower cost." },
+      { "id": "HuggingFaceTB/SmolLM3-3B", "description": "Small multilingual long context model surprisingly strong reasoning." },
+      { "id": "Qwen/Qwen3-30B-A3B", "description": "Qwen base model for general use or further fine tuning." },
+      { "id": "Qwen/Qwen2.5-7B-Instruct", "description": "Compact instruction model solid for basic conversation and tasks." },
+      { "id": "Qwen/Qwen3-32B", "description": "General purpose Qwen strong for complex queries and dialogues." },
+      { "id": "Qwen/QwQ-32B", "description": "Preview Qwen showcasing next generation features and alignment." },
+      { "id": "Qwen/Qwen3-235B-A22B-Instruct-2507", "description": "Flagship instruction Qwen near state of the art across domains." },
+      { "id": "meta-llama/Llama-3.3-70B-Instruct", "description": "Improved Llama alignment and structure powerful complex conversations." },
+      { "id": "Qwen/Qwen2.5-VL-32B-Instruct", "description": "Multimodal Qwen advanced visual reasoning for complex image plus text." },
+      { "id": "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B", "description": "Tiny distilled Qwen stepwise math and logic reasoning." },
+      { "id": "Qwen/Qwen3-235B-A22B", "description": "Qwen base at flagship scale ideal for custom fine tuning." },
+      { "id": "meta-llama/Llama-4-Scout-17B-16E-Instruct", "description": "Processes text and images excels at summarization and cross modal reasoning." },
+      { "id": "NousResearch/Hermes-4-70B", "description": "Steerable assistant strong reasoning and creativity highly helpful." },
+      { "id": "Qwen/Qwen2.5-Coder-32B-Instruct", "description": "Code model strong generation and tool use bridges sizes." },
+      { "id": "katanemo/Arch-Router-1.5B", "description": "Lightweight router model directs queries to specialized backends." },
+      { "id": "meta-llama/Llama-3.2-1B-Instruct", "description": "Ultra small Llama handles basic Q and A and instructions." },
+      { "id": "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B", "description": "Distilled Qwen excels at stepwise logic in compact footprint." },
+      { "id": "deepseek-ai/DeepSeek-V3", "description": "General language model direct answers strong creative and knowledge tasks." },
+      { "id": "deepseek-ai/DeepSeek-V3-0324", "description": "Updated V3 better reasoning and coding strong tool use." },
+      { "id": "CohereLabs/command-a-translate-08-2025", "description": "Translation focused Command model high quality multilingual translation." },
+      { "id": "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B", "description": "Distilled from R1 strong reasoning standout dense model." },
+      { "id": "baidu/ERNIE-4.5-VL-424B-A47B-Base-PT", "description": "Multimodal base text image pretraining for cross modal understanding." },
+      { "id": "meta-llama/Llama-4-Maverick-17B-128E-Instruct", "description": "MoE multimodal Llama rivals top vision language models." },
+      { "id": "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8", "description": "Quantized giant coder faster lighter retains advanced code generation." },
+      { "id": "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B", "description": "Qwen3 variant with R1 reasoning improvements compact and capable." },
+      { "id": "deepseek-ai/DeepSeek-R1-0528", "description": "R1 update improved reasoning, fewer hallucinations, adds function calling.", "parameters": { "max_tokens": 32000 } },
+      { "id": "Qwen/Qwen3-14B", "description": "Balanced Qwen good performance and efficiency for assistants." },
+      { "id": "MiniMaxAI/MiniMax-M1-80k", "description": "Long context MoE very fast excels at long range reasoning and code." },
+      { "id": "Qwen/Qwen2.5-Coder-7B-Instruct", "description": "Efficient coding assistant for lightweight programming tasks." },
+      { "id": "aisingapore/Gemma-SEA-LION-v4-27B-IT", "description": "Gemma SEA LION optimized for Southeast Asian languages or enterprise." },
+      { "id": "CohereLabs/aya-expanse-8b", "description": "Small Aya Expanse broad knowledge and efficient general reasoning." },
+      { "id": "baichuan-inc/Baichuan-M2-32B", "description": "Medical reasoning specialist fine tuned for clinical QA bilingual." },
+      { "id": "Qwen/Qwen2.5-VL-72B-Instruct", "description": "Vision language Qwen detailed image interpretation and instructions." },
+      { "id": "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8", "description": "FP8 Maverick efficient deployment retains top multimodal capability." },
+      { "id": "zai-org/GLM-4.1V-9B-Thinking", "description": "Vision language with explicit reasoning strong for its size." },
+      { "id": "zai-org/GLM-4.5-Air-FP8", "description": "FP8 efficient GLM Air hybrid reasoning with minimal compute." },
+      { "id": "google/gemma-2-2b-it", "description": "Small Gemma instruction tuned safe responsible outputs easy deployment." },
+      { "id": "arcee-ai/AFM-4.5B", "description": "Enterprise focused model strong CPU performance compliant and practical." },
+      { "id": "deepseek-ai/DeepSeek-R1-Distill-Llama-8B", "description": "Llama distilled from R1 strong reasoning and structured outputs." },
+      { "id": "CohereLabs/aya-vision-8b", "description": "Vision capable Aya handles images and text for basic multimodal." },
+      { "id": "NousResearch/Hermes-3-Llama-3.1-405B", "description": "Highly aligned assistant excels at math, code, QA." },
+      { "id": "Qwen/Qwen2.5-72B-Instruct", "description": "Accurate detailed instruction model supports tools and long contexts." },
+      { "id": "meta-llama/Llama-Guard-4-12B", "description": "Safety guardrail model filters and enforces content policies." },
+      { "id": "CohereLabs/command-a-vision-07-2025", "description": "Command model with image input captioning and visual QA." },
+      { "id": "nvidia/Llama-3_1-Nemotron-Ultra-253B-v1", "description": "NVIDIA tuned Llama optimized throughput for research and production." },
+      { "id": "meta-llama/Meta-Llama-3-70B-Instruct", "description": "Instruction tuned Llama improved reasoning and reliability over predecessors." },
+      { "id": "NousResearch/Hermes-4-405B", "description": "Frontier Hermes hybrid reasoning excels at math, code, creativity." },
+      { "id": "NousResearch/Hermes-2-Pro-Llama-3-8B", "description": "Small Hermes highly steerable maximized helpfulness for basics." },
+      { "id": "google/gemma-2-9b-it", "description": "Gemma with improved accuracy and context safe, easy to deploy." },
+      { "id": "Sao10K/L3-8B-Stheno-v3.2", "description": "Community Llama variant themed tuning and unique conversational style." },
+      { "id": "deepcogito/cogito-v2-preview-llama-109B-MoE", "description": "MoE preview advanced reasoning tests DeepCogito v2 fine tuning." },
+      { "id": "CohereLabs/c4ai-command-r-08-2024", "description": "Cohere Command variant instruction following with specialized tuning." },
+      { "id": "baidu/ERNIE-4.5-300B-A47B-Base-PT", "description": "Large base model foundation for specialized language systems." },
+      { "id": "CohereLabs/aya-expanse-32b", "description": "Aya Expanse large comprehensive knowledge and reasoning capabilities." },
+      { "id": "CohereLabs/c4ai-command-a-03-2025", "description": "Updated Command assistant improved accuracy and general usefulness." },
+      { "id": "CohereLabs/command-a-reasoning-08-2025", "description": "Command variant optimized for complex multi step logical reasoning." },
+      { "id": "alpindale/WizardLM-2-8x22B", "description": "Multi expert WizardLM MoE approach for efficient high quality generation." },
+      { "id": "tokyotech-llm/Llama-3.3-Swallow-70B-Instruct-v0.4", "description": "Academic fine tune potential multilingual and domain improvements." },
+      { "id": "deepseek-ai/DeepSeek-R1-Distill-Llama-70B", "description": "Llama distilled from R1 improved reasoning enterprise friendly." },
+      { "id": "CohereLabs/c4ai-command-r7b-12-2024", "description": "Small Command variant research or regional adaptation focus." },
+      { "id": "Sao10K/L3-70B-Euryale-v2.1", "description": "Creative community instruct model with distinctive persona." },
+      { "id": "CohereLabs/aya-vision-32b", "description": "Larger Aya Vision advanced vision language with detailed reasoning." },
+      { "id": "meta-llama/Llama-3.1-405B-Instruct", "description": "Massive instruction model very long context excels at complex tasks." },
+      { "id": "CohereLabs/c4ai-command-r7b-arabic-02-2025", "description": "Command tuned for Arabic fluent and culturally appropriate outputs." },
+      { "id": "Sao10K/L3-8B-Lunaris-v1", "description": "Community Llama creative role play oriented themed persona." },
+      { "id": "Qwen/Qwen2.5-Coder-7B", "description": "Small Qwen coder basic programming assistance for low resource environments." },
+      { "id": "Qwen/QwQ-32B-Preview", "description": "Preview Qwen experimental features and architecture refinements." },
+      { "id": "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B", "description": "Distilled Qwen mid size strong reasoning and clear steps." },
+      { "id": "meta-llama/Llama-3.1-70B-Instruct", "description": "Instruction tuned Llama improved reasoning and factual reliability." },
+      { "id": "Qwen/Qwen3-235B-A22B-FP8", "description": "FP8 quantized Qwen flagship efficient access to ultra large capabilities." },
+      { "id": "zai-org/GLM-4-32B-0414", "description": "Open licensed GLM matches larger proprietary models on benchmarks." },
+      { "id": "SentientAGI/Dobby-Unhinged-Llama-3.3-70B", "description": "Unfiltered candid creative outputs intentionally less restricted behavior." },
+      { "id": "marin-community/marin-8b-instruct", "description": "Community tuned assistant helpful conversational everyday tasks." },
+      { "id": "deepseek-ai/DeepSeek-Prover-V2-671B", "description": "Specialist for mathematical proofs and formal reasoning workflows." },
+      { "id": "NousResearch/Hermes-3-Llama-3.1-70B", "description": "Highly aligned assistant strong complex instruction following." },
+      { "id": "Qwen/Qwen2.5-Coder-3B-Instruct", "description": "Tiny coding assistant basic code completions and explanations." },
+      { "id": "deepcogito/cogito-v2-preview-llama-70B", "description": "Preview fine tune enhanced reasoning and tool use indications." },
+      { "id": "deepcogito/cogito-v2-preview-llama-405B", "description": "Preview at frontier scale tests advanced fine tuning methods." },
+      { "id": "deepcogito/cogito-v2-preview-deepseek-671B-MoE", "description": "Experimental blend of DeepCogito and DeepSeek approaches for reasoning." }
     ]
-  HF_ORG_ADMIN: '644171cfbd0c97265298aa99'
-  HF_ORG_EARLY_ACCESS: '5e67bd5b1009063689407478'
-  HF_API_ROOT: 'https://api-inference.endpoints.huggingface.tech/models'
+
 infisical:
   enabled: true
   env: "prod-us-east-1"
@@ -719,6 +245,3 @@ resources:
   limits:
     cpu: 4
     memory: 8Gi
-
-monitoring:
-  enabled: true
